@@ -1,0 +1,1573 @@
+import javax.swing.*;
+import java.awt.*;
+import java.awt.event.*;
+import java.util.*;
+import java.util.List;
+
+public class GamePanel extends JPanel implements Runnable {
+
+    final int screenWidth  = 600;
+    final int screenHeight = 800;
+    final int FPS          = 60;
+
+    static final double CEIL_Y = 30.0;
+
+    Thread    gameThread;
+    GameState gameState = GameState.LOGIN;
+    SaveManager.UserProgress currentUser;
+    StringBuilder loginInput = new StringBuilder();
+
+    // Player 1 (Single/Duo Left)
+    BallWorld      world;
+    Shooter        shooter;
+    volatile Ball  movingBall;
+    ClusterFinder  clusterFinder;
+    FloatingFinder floatingFinder;
+    LevelManager   levelManager;
+    AnimationManager animationManager;
+    
+    // Player 2 (Duo Right)
+    BallWorld      world2;
+    Shooter        shooter2;
+    volatile Ball  movingBall2;
+    ClusterFinder  clusterFinder2;
+    FloatingFinder floatingFinder2;
+    LevelManager   levelManager2;
+    AnimationManager animationManager2;
+    
+    // Duo shared
+    double sweepAngle = 0;
+    double sweepAngle2 = 0;
+    int duoWinsP1 = 0;
+    int duoWinsP2 = 0;
+    
+    // Duo controls
+    boolean p1Left = false, p1Right = false;
+    boolean p2Left = false, p2Right = false;
+
+    int mouseX = screenWidth / 2;
+    int mouseY = 0;
+    boolean isDragging = false;
+
+    volatile Ball pendingSettledBall = null;
+    int  settleDelayFrames  = 0;
+    volatile Ball pendingSettledBall2 = null;
+    int  settleDelayFrames2  = 0;
+    
+    int    introTimer      = 0;
+    String introDifficulty = "";
+
+    // Countdown death animation
+    Ball countdownDeathBall = null;
+    int  deathFrame = 0;
+
+    // Level Timer
+    int  levelTimeRemaining = 0;
+    long lastSecondTick = 0;
+
+    public GamePanel() {
+        setPreferredSize(new Dimension(screenWidth, screenHeight));
+        setBackground(new Color(26, 26, 46));
+        setDoubleBuffered(true);
+        setFocusable(true);
+
+        initGame();
+
+        addMouseListener(new MouseAdapter() {
+            @Override
+            public void mousePressed(MouseEvent e) {
+                if (e.getX() < 40 && e.getY() < 30) {
+                    SoundManager.toggleMute();
+                    return;
+                }
+                
+                if (gameState == GameState.LOGIN) {
+                    handleLoginClick(e.getX(), e.getY());
+                } else if (gameState == GameState.MODE_SELECT) {
+                    handleModeSelectClick(e.getX(), e.getY());
+                } else if (gameState == GameState.MENU) {
+                    handleMenuClick(e.getX(), e.getY());
+                } else if (gameState == GameState.LEVEL_SELECT) {
+                    handleLevelSelectClick(e.getX(), e.getY());
+                } else if (gameState == GameState.PAUSED) {
+                    handlePauseMenuClick(e.getX(), e.getY());
+                } else if (gameState == GameState.GAME_OVER) {
+                    handleGameOverMenuClick(e.getX(), e.getY());
+                } else if (gameState == GameState.LEVEL_CLEAR) {
+                    handleLevelClearClick(e.getX(), e.getY());
+                } else if (gameState == GameState.YOU_WIN) {
+                    handleYouWinClick(e.getX(), e.getY());
+                } else if (gameState == GameState.DUO_WIN_P1 || gameState == GameState.DUO_WIN_P2) {
+                    handleDuoWinClick(e.getX(), e.getY());
+                } else if (gameState == GameState.DUO_PLAY) {
+                    handleDuoClick(e.getX(), e.getY());
+                } else if (gameState == GameState.AIMING) {
+                    if (e.getX() > screenWidth - 40 && e.getY() < 30) {
+                        gameState = GameState.PAUSED;
+                        return;
+                    }
+                    
+                    int nx = shooter.getX() + 50;
+                    int ny = shooter.getY();
+                    int dx = e.getX() - nx;
+                    int dy = e.getY() - ny;
+                    if (dx*dx + dy*dy <= 225) {
+                        shooter.swapBalls();
+                        return;
+                    }
+                    
+                    isDragging = true;
+                    mouseX = e.getX();
+                    mouseY = e.getY();
+                }
+            }
+
+            @Override
+            public void mouseReleased(MouseEvent e) {
+                if (gameState == GameState.AIMING && isDragging) {
+                    isDragging = false;
+                    shootBall(e.getX(), e.getY());
+                }
+            }
+        });
+
+        addMouseMotionListener(new MouseMotionAdapter() {
+            @Override
+            public void mouseMoved(MouseEvent e) {
+                mouseX = e.getX();
+                mouseY = e.getY();
+            }
+            @Override
+            public void mouseDragged(MouseEvent e) {
+                mouseX = e.getX();
+                mouseY = e.getY();
+            }
+        });
+
+        // Use KeyBindings for more reliable simultaneous input in Duo Mode
+        InputMap im = getInputMap(WHEN_IN_FOCUSED_WINDOW);
+        ActionMap amMap = getActionMap();
+
+        im.put(KeyStroke.getKeyStroke(KeyEvent.VK_W, 0), "shootP1");
+        amMap.put("shootP1", new AbstractAction() {
+            @Override
+            public void actionPerformed(ActionEvent e) {
+                if (gameState == GameState.DUO_PLAY) {
+                    synchronized (GamePanel.this) {
+                        if (movingBall == null && pendingSettledBall == null) {
+                            shootDuoBall(1);
+                        }
+                    }
+                }
+            }
+        });
+
+        im.put(KeyStroke.getKeyStroke(KeyEvent.VK_UP, 0), "shootP2");
+        amMap.put("shootP2", new AbstractAction() {
+            @Override
+            public void actionPerformed(ActionEvent e) {
+                if (gameState == GameState.DUO_PLAY) {
+                    synchronized (GamePanel.this) {
+                        if (movingBall2 == null && pendingSettledBall2 == null) {
+                            shootDuoBall(2);
+                        }
+                    }
+                }
+            }
+        });
+
+        // Duo Movement Bindings
+        im.put(KeyStroke.getKeyStroke(KeyEvent.VK_A, 0), "p1L_p");
+        amMap.put("p1L_p", new AbstractAction() { @Override public void actionPerformed(ActionEvent e) { p1Left = true; } });
+        im.put(KeyStroke.getKeyStroke(KeyEvent.VK_A, 0, true), "p1L_r");
+        amMap.put("p1L_r", new AbstractAction() { @Override public void actionPerformed(ActionEvent e) { p1Left = false; } });
+
+        im.put(KeyStroke.getKeyStroke(KeyEvent.VK_D, 0), "p1R_p");
+        amMap.put("p1R_p", new AbstractAction() { @Override public void actionPerformed(ActionEvent e) { p1Right = true; } });
+        im.put(KeyStroke.getKeyStroke(KeyEvent.VK_D, 0, true), "p1R_r");
+        amMap.put("p1R_r", new AbstractAction() { @Override public void actionPerformed(ActionEvent e) { p1Right = false; } });
+
+        im.put(KeyStroke.getKeyStroke(KeyEvent.VK_LEFT, 0), "p2L_p");
+        amMap.put("p2L_p", new AbstractAction() { @Override public void actionPerformed(ActionEvent e) { p2Left = true; } });
+        im.put(KeyStroke.getKeyStroke(KeyEvent.VK_LEFT, 0, true), "p2L_r");
+        amMap.put("p2L_r", new AbstractAction() { @Override public void actionPerformed(ActionEvent e) { p2Left = false; } });
+
+        im.put(KeyStroke.getKeyStroke(KeyEvent.VK_RIGHT, 0), "p2R_p");
+        amMap.put("p2R_p", new AbstractAction() { @Override public void actionPerformed(ActionEvent e) { p2Right = true; } });
+        im.put(KeyStroke.getKeyStroke(KeyEvent.VK_RIGHT, 0, true), "p2R_r");
+        amMap.put("p2R_r", new AbstractAction() { @Override public void actionPerformed(ActionEvent e) { p2Right = false; } });
+
+        im.put(KeyStroke.getKeyStroke(KeyEvent.VK_S, 0), "swapP1");
+        amMap.put("swapP1", new AbstractAction() {
+            @Override
+            public void actionPerformed(ActionEvent e) {
+                if (gameState == GameState.DUO_PLAY) shooter.swapBalls();
+            }
+        });
+
+        im.put(KeyStroke.getKeyStroke(KeyEvent.VK_DOWN, 0), "swapP2");
+        amMap.put("swapP2", new AbstractAction() {
+            @Override
+            public void actionPerformed(ActionEvent e) {
+                if (gameState == GameState.DUO_PLAY) shooter2.swapBalls();
+            }
+        });
+
+        addKeyListener(new KeyAdapter() {
+            @Override
+            public void keyPressed(KeyEvent e) {
+                if (gameState == GameState.LOGIN) {
+                    if (e.getKeyCode() == KeyEvent.VK_ENTER && loginInput.length() > 0) {
+                        login();
+                    } else if (e.getKeyCode() == KeyEvent.VK_BACK_SPACE && loginInput.length() > 0) {
+                        loginInput.deleteCharAt(loginInput.length() - 1);
+                    } else {
+                        char c = e.getKeyChar();
+                        if (Character.isLetterOrDigit(c) && loginInput.length() < 12) {
+                            loginInput.append(c);
+                        }
+                    }
+                } else if (e.getKeyCode() == KeyEvent.VK_R
+                        && (gameState == GameState.GAME_OVER
+                         || gameState == GameState.YOU_WIN)) {
+                    resetGame();
+                }
+            }
+        });
+        SoundManager.startBGM();
+    }
+
+    private void initGame() {
+        world          = new BallWorld(screenWidth, screenHeight, CEIL_Y);
+        clusterFinder  = new ClusterFinder(world);
+        floatingFinder = new FloatingFinder(world);
+        levelManager   = new LevelManager();
+        shooter        = new Shooter(screenWidth / 2, screenHeight - 60, levelManager.getDifficulty().getMaxColors());
+        animationManager = new AnimationManager(screenWidth, screenHeight);
+        loadLevel();
+    }
+
+    private void resetGame() {
+        movingBall = null;
+        levelManager.reset();
+        loadLevel();
+        shooter.loadNextBall();
+        gameState = GameState.AIMING;
+    }
+
+    private void loadLevel() {
+        world.getBalls().clear();
+        world.resetCeiling();
+        countdownDeathBall = null;
+        deathFrame = 0;
+
+        LevelData level = levelManager.getCurrent();
+        if (level == null) return;
+
+        Difficulty diff = levelManager.getDifficulty();
+        int[][] layout = level.getLayout();
+        int maxColors = diff.getMaxColors();
+        double clusterChance = diff.getClusterChance();
+        int maxRows = diff.getInitialRows();
+        
+        int levelNum = levelManager.getCurrentIndex() + 1;
+        levelTimeRemaining = level.getTimeLimit();
+        
+        lastSecondTick = System.currentTimeMillis();
+        
+        shooter.setMaxColors(maxColors);
+
+        int    radius   = 15;
+        int    diameter = radius * 2;
+        double rowH     = diameter * Math.sqrt(3) / 2.0;
+
+        int rowsToRender = Math.min(layout.length, maxRows);
+        Color[][] assigned = new Color[rowsToRender][];
+
+        for (int row = 0; row < rowsToRender; row++) {
+            int[] cols  = layout[row];
+            assigned[row] = new Color[cols.length];
+            double xStart = (row % 2 == 0) ? radius : (radius + radius);
+            double y      = CEIL_Y + radius + row * rowH;
+
+            for (int col = 0; col < cols.length; col++) {
+                int colorIdx = cols[col];
+                if (colorIdx == 0) continue;
+
+                List<Color> neighbors = new ArrayList<>();
+                if (col > 0 && assigned[row][col-1] != null) neighbors.add(assigned[row][col-1]);
+                if (row > 0) {
+                    if (row % 2 == 0) {
+                        if (col > 0 && assigned[row-1][col-1] != null) neighbors.add(assigned[row-1][col-1]);
+                        if (col < assigned[row-1].length && assigned[row-1][col] != null) neighbors.add(assigned[row-1][col]);
+                    } else {
+                        if (col < assigned[row-1].length && assigned[row-1][col] != null) neighbors.add(assigned[row-1][col]);
+                        if (col + 1 < assigned[row-1].length && assigned[row-1][col+1] != null) neighbors.add(assigned[row-1][col+1]);
+                    }
+                }
+
+                Color c;
+                if (!neighbors.isEmpty() && Math.random() < clusterChance) {
+                    c = neighbors.get((int)(Math.random() * neighbors.size()));
+                } else {
+                    c = BallPalette.random(maxColors);
+                }
+                assigned[row][col] = c;
+
+                double x = xStart + col * diameter;
+                Ball b = new Ball(x, y, radius, c);
+                world.getBalls().add(b);
+            }
+        }
+
+        List<Ball> allBalls = new ArrayList<>(world.getBalls());
+        if (allBalls.size() >= 10) {
+            Collections.shuffle(allBalls);
+            int idx = 0;
+            
+            // Bomb: Every 2 levels
+            if (levelNum % 2 == 0) {
+                allBalls.get(idx++).setType(Ball.Type.BOMB);
+            }
+            
+            // Countdown: Only every 3 levels (to reduce difficulty)
+            if (levelNum % 3 == 0) {
+                Ball cb = allBalls.get(idx++);
+                cb.setType(Ball.Type.COUNTDOWN);
+                cb.setCountdown(12); // Slightly more time
+            }
+            
+            // Multi-color: Every 2 levels
+            if (levelNum % 2 == 0) {
+                allBalls.get(idx++).setType(Ball.Type.MULTI_COLOR);
+            }
+            
+            // Random chance (extremely reduced for balance)
+            Difficulty difficulty = levelManager.getDifficulty();
+            double bombProb = (difficulty == Difficulty.EASY) ? 0.01 : (difficulty == Difficulty.MEDIUM ? 0.02 : 0.04);
+            double countProb = (difficulty == Difficulty.EASY) ? 0.01 : (difficulty == Difficulty.MEDIUM ? 0.03 : 0.06);
+            
+            for (int i = idx; i < allBalls.size(); i++) {
+                double rand = Math.random();
+                if (levelNum % 2 == 0 && rand < bombProb) {
+                    allBalls.get(i).setType(Ball.Type.BOMB);
+                } else if (levelNum % 3 == 0 && rand < countProb) {
+                    allBalls.get(i).setType(Ball.Type.COUNTDOWN);
+                    allBalls.get(i).setCountdown(10);
+                }
+            }
+        }
+    }
+
+    private void handleMenuClick(int x, int y) {
+        int bw = 250, bh = 40, bx = (screenWidth - bw) / 2;
+        int easyY = screenHeight / 2 - 40, medY = screenHeight / 2 + 20, hardY = screenHeight / 2 + 80;
+        int backY = screenHeight / 2 + 140;
+        
+        if (x >= bx && x <= bx + bw) {
+            if (y >= easyY && y <= easyY + bh) selectDifficulty(Difficulty.EASY);
+            else if (y >= medY && y <= medY + bh) selectDifficulty(Difficulty.MEDIUM);
+            else if (y >= hardY && y <= hardY + bh) selectDifficulty(Difficulty.HARD);
+            else if (y >= backY && y <= backY + bh) {
+                gameState = GameState.MODE_SELECT;
+                SoundManager.play("click");
+            }
+        }
+    }
+
+    private void selectDifficulty(Difficulty diff) {
+        levelManager.setDifficulty(diff);
+        // Set unlocked progress from save
+        if (diff == Difficulty.EASY) levelManager.setCurrentUnlocked(currentUser.easyUnlocked);
+        else if (diff == Difficulty.MEDIUM) levelManager.setCurrentUnlocked(currentUser.mediumUnlocked);
+        else if (diff == Difficulty.HARD) levelManager.setCurrentUnlocked(currentUser.hardUnlocked);
+        
+        gameState = GameState.LEVEL_SELECT;
+    }
+
+    private void handleLoginClick(int x, int y) {
+        int bw = 200, bh = 40, bx = (screenWidth - bw) / 2;
+        int by = screenHeight / 2 + 60;
+        if (x >= bx && x <= bx + bw && y >= by && y <= by + bh && loginInput.length() > 0) {
+            login();
+        }
+    }
+
+    private void login() {
+        SoundManager.play("click");
+        currentUser = SaveManager.load(loginInput.toString());
+        gameState = GameState.MODE_SELECT;
+    }
+
+    private void handleModeSelectClick(int x, int y) {
+        int bw = 250, bh = 40, bx = (screenWidth - bw) / 2;
+        int singleY = screenHeight / 2 - 40, duoY = screenHeight / 2 + 20, backY = screenHeight / 2 + 80;
+        if (x >= bx && x <= bx + bw) {
+            if (y >= singleY && y <= singleY + bh) {
+                gameState = GameState.MENU;
+                SoundManager.play("click");
+            } else if (y >= duoY && y <= duoY + bh) {
+                startDuoMode();
+                SoundManager.play("click");
+            } else if (y >= backY && y <= backY + bh) {
+                gameState = GameState.LOGIN;
+                SoundManager.play("click");
+            }
+        }
+    }
+
+    private void startDuoMode() {
+        // Initialize Player 1 objects (scaled for half width)
+        world = new BallWorld(300, screenHeight, CEIL_Y);
+        levelManager = new LevelManager();
+        levelManager.setDifficulty(Difficulty.EASY);
+        clusterFinder = new ClusterFinder(world);
+        floatingFinder = new FloatingFinder(world);
+        animationManager = new AnimationManager(300, screenHeight);
+        shooter = new Shooter(150, screenHeight - 60, 4);
+        
+        // Initialize Player 2 objects
+        world2 = new BallWorld(300, screenHeight, CEIL_Y);
+        levelManager2 = new LevelManager();
+        levelManager2.setDifficulty(Difficulty.EASY);
+        clusterFinder2 = new ClusterFinder(world2);
+        floatingFinder2 = new FloatingFinder(world2);
+        animationManager2 = new AnimationManager(300, screenHeight);
+        shooter2 = new Shooter(150, screenHeight - 60, 4);
+        
+        duoWinsP1 = 0;
+        duoWinsP2 = 0;
+        loadDuoLevel(1);
+        loadDuoLevel(2);
+        
+        gameState = GameState.DUO_PLAY;
+        SoundManager.startBGM();
+    }
+
+    private void loadDuoLevel(int player) {
+        if (player == 1) {
+            levelManager.loadLevel(world, 4);
+            shooter.loadNextBall();
+        } else {
+            levelManager2.loadLevel(world2, 4);
+            shooter2.loadNextBall();
+        }
+    }
+
+    private void handleDuoClick(int x, int y) {
+        int bw = 120, bh = 40, by = screenHeight - 60;
+        int backX = 170, restartX = 310;
+        
+        if (y >= by && y <= by + bh) {
+            if (x >= backX && x <= backX + bw) {
+                gameState = GameState.MODE_SELECT;
+                SoundManager.play("click");
+            } else if (x >= restartX && x <= restartX + bw) {
+                startDuoMode();
+                SoundManager.play("click");
+            }
+        }
+    }
+
+    private void handleDuoWinClick(int x, int y) {
+        int bw = 250, bh = 40, bx = (screenWidth - bw) / 2;
+        int replayY = screenHeight / 2 + 50, menuY = screenHeight / 2 + 110;
+        if (x >= bx && x <= bx + bw) {
+            if (y >= replayY && y <= replayY + bh) {
+                startDuoMode();
+            } else if (y >= menuY && y <= menuY + bh) {
+                gameState = GameState.MODE_SELECT;
+                SoundManager.setBGMVolume(1.0);
+                SoundManager.startBGM();
+            }
+        }
+    }
+
+    private void handleLevelSelectClick(int x, int y) {
+        int rows = 5, cols = 5;
+        int padding = 20, startY = 200;
+        int boxSize = (screenWidth - (cols + 1) * padding) / cols;
+        
+        int unlocked = levelManager.getCurrentUnlocked();
+        int total = levelManager.getDifficulty().getTotalLevels();
+
+        for (int i = 0; i < total; i++) {
+            int r = i / cols;
+            int c = i % cols;
+            int bx = padding + c * (boxSize + padding);
+            int by = startY + r * (boxSize + padding);
+            
+            if (x >= bx && x <= bx + boxSize && y >= by && y <= by + boxSize) {
+                if (i < unlocked) {
+                    levelManager.setCurrentIndex(i);
+                    startLoadedLevel();
+                    return;
+                }
+            }
+        }
+        
+        // Back to menu button
+        int bw = 250, bh = 40, bx = (screenWidth - bw) / 2;
+        int by = screenHeight - 60;
+        if (x >= bx && x <= bx + bw && y >= by && y <= by + bh) {
+            gameState = GameState.MENU;
+            SoundManager.play("click");
+        }
+    }
+
+    private void startLoadedLevel() {
+        SoundManager.play("click");
+        loadLevel();
+        shooter = new Shooter(screenWidth / 2, screenHeight - 60, levelManager.getDifficulty().getMaxColors());
+        shooter.loadNextBall();
+        gameState = GameState.STARTING_LEVEL;
+        introTimer = 90;
+        introDifficulty = levelManager.getDifficulty().name();
+    }
+
+    private void handlePauseMenuClick(int x, int y) {
+        int bw = 250, bh = 40, bx = (screenWidth - bw) / 2;
+        int resumeY = screenHeight / 2 - 40, restartY = screenHeight / 2 + 20, menuY = screenHeight / 2 + 80;
+        if (x >= bx && x <= bx + bw) {
+            if (y >= resumeY && y <= resumeY + bh) gameState = GameState.AIMING;
+            else if (y >= restartY && y <= restartY + bh) restartLevel();
+            else if (y >= menuY && y <= menuY + bh) {
+                gameState = GameState.MENU;
+                SoundManager.setBGMVolume(1.0);
+                SoundManager.startBGM();
+            }
+        }
+    }
+    
+    private void handleGameOverMenuClick(int x, int y) {
+        int bw = 250, bh = 40, bx = (screenWidth - bw) / 2;
+        int restartY = screenHeight / 2 + 20, menuY = screenHeight / 2 + 80;
+        if (x >= bx && x <= bx + bw) {
+            if (y >= restartY && y <= restartY + bh) restartLevel();
+            else if (y >= menuY && y <= menuY + bh) {
+                gameState = GameState.MENU;
+                SoundManager.setBGMVolume(1.0);
+                SoundManager.startBGM();
+            }
+        }
+    }
+
+    private void handleLevelClearClick(int x, int y) {
+        int bw = 250, bh = 40, bx = (screenWidth - bw) / 2;
+        int nextY = screenHeight / 2 + 20, restartY = screenHeight / 2 + 80, menuY = screenHeight / 2 + 140;
+        
+        if (x >= bx && x <= bx + bw) {
+            if (levelManager.hasNext() && y >= nextY && y <= nextY + bh) {
+                levelManager.next();
+                loadLevel();
+                gameState = GameState.AIMING;
+            } else if (y >= restartY && y <= restartY + bh) {
+                restartLevel();
+            } else if (y >= menuY && y <= menuY + bh) {
+                gameState = GameState.MENU;
+                SoundManager.setBGMVolume(1.0);
+                SoundManager.startBGM();
+            }
+        }
+    }
+
+    private void handleYouWinClick(int x, int y) {
+        int bw = 250, bh = 40, bx = (screenWidth - bw) / 2;
+        int restartY = screenHeight / 2 + 20, menuY = screenHeight / 2 + 80;
+        
+        if (x >= bx && x <= bx + bw) {
+            if (y >= restartY && y <= restartY + bh) {
+                levelManager.reset();
+                loadLevel();
+                gameState = GameState.AIMING;
+            } else if (y >= menuY && y <= menuY + bh) {
+                gameState = GameState.MENU;
+                SoundManager.setBGMVolume(1.0);
+                SoundManager.startBGM();
+            }
+        }
+    }
+    
+    private void startGame(Difficulty diff) {
+        SoundManager.play("click");
+        SoundManager.setBGMVolume(0.3);
+        SoundManager.startBGM();
+        levelManager.setDifficulty(diff);
+        shooter = new Shooter(screenWidth / 2, screenHeight - 60, diff.getMaxColors());
+        resetGame();
+        gameState = GameState.STARTING_LEVEL;
+        introTimer = 90;
+        introDifficulty = diff.name();
+    }
+
+    private void restartLevel() {
+        SoundManager.play("click");
+        SoundManager.setBGMVolume(0.3);
+        SoundManager.startBGM();
+        
+        movingBall = null;
+        loadLevel();
+        shooter = new Shooter(screenWidth / 2, screenHeight - 60, levelManager.getDifficulty().getMaxColors());
+        shooter.loadNextBall();
+        
+        gameState = GameState.STARTING_LEVEL;
+        introTimer = 90;
+        introDifficulty = levelManager.getDifficulty().name();
+    }
+
+    public void startGameThread() {
+        gameThread = new Thread(this);
+        gameThread.start();
+    }
+
+    @Override
+    public void run() {
+        double drawInterval = 1_000_000_000.0 / FPS;
+        double delta = 0;
+        long lastTime = System.nanoTime();
+        while (gameThread != null) {
+            long now = System.nanoTime();
+            delta += (now - lastTime) / drawInterval;
+            lastTime = now;
+        if (delta >= 1) { update(); repaint(); delta--; }
+        }
+    }
+
+    public void update() {
+        if (gameState == GameState.DUO_PLAY) {
+            updateDuo();
+            return;
+        }
+
+        if (gameState == GameState.LOGIN || gameState == GameState.MENU || gameState == GameState.LEVEL_SELECT || gameState == GameState.PAUSED || gameState == GameState.MODE_SELECT) return;
+
+        if (gameState == GameState.GAME_OVER && countdownDeathBall != null) {
+            deathFrame++;
+            if (deathFrame >= 120) countdownDeathBall = null;
+            return;
+        }
+
+        if (levelTimeRemaining > 0 && (gameState == GameState.AIMING || gameState == GameState.FIRING)) {
+            long now = System.currentTimeMillis();
+            while (now - lastSecondTick >= 1000) {
+                levelTimeRemaining--;
+                lastSecondTick += 1000;
+                if (levelTimeRemaining <= 0) {
+                    gameState = GameState.GAME_OVER;
+                    SoundManager.play("lose");
+                    SoundManager.stopBGM();
+                    return;
+                }
+            }
+        }
+
+        animationManager.update();
+        world.updateVisuals();
+
+        // Advance grid if playing
+        if (gameState == GameState.AIMING || gameState == GameState.FIRING) {
+            double speed = levelManager.getDifficulty().getGridSpeed();
+            int levelNum = levelManager.getCurrentIndex() + 1;
+            // Milestone levels move down faster (2.5x speed) instead of being timed
+            if (levelNum % 5 == 0) {
+                speed *= 2.5;
+            }
+            world.advanceGrid(speed);
+        }
+        
+        // Instant transition if level is already empty
+        if ((gameState == GameState.AIMING || gameState == GameState.FIRING) && world.isEmpty()) {
+            winLevel();
+            return;
+        }
+
+        if (gameState == GameState.STARTING_LEVEL) {
+            introTimer--;
+            if (introTimer <= 0) {
+                gameState = GameState.AIMING;
+                lastSecondTick = System.currentTimeMillis();
+            }
+            return;
+        }
+
+        if (pendingSettledBall != null) {
+            settleDelayFrames--;
+            if (settleDelayFrames <= 0) {
+                processSettled(pendingSettledBall);
+                pendingSettledBall = null;
+                shooter.loadNextBall();
+                if (gameState == GameState.FIRING) gameState = GameState.AIMING;
+            }
+            return;
+        }
+        
+        if (gameState == GameState.LEVEL_CLEAR && animationManager.isSlideOutDone()) {
+            if (!levelManager.hasNext() && gameState != GameState.YOU_WIN) {
+                gameState = GameState.YOU_WIN;
+                SoundManager.play("win");
+            }
+        }
+
+        if (gameState != GameState.FIRING || movingBall == null) return;
+
+        double preX = movingBall.getX(), preY = movingBall.getY();
+        movingBall.update(screenWidth);
+
+        boolean outOfBounds = movingBall.getY() - movingBall.getRadius() > screenHeight;
+        boolean hitCeiling  = movingBall.getY() - movingBall.getRadius() <= world.getCeilingY();
+        boolean hitBall     = world.sweptCollision(preX, preY, movingBall.getVx(), movingBall.getVy(), movingBall.getRadius()) >= 0;
+
+        if (outOfBounds) {
+            movingBall = null;
+            shooter.loadNextBall();
+            gameState = GameState.AIMING;
+            return;
+        }
+
+        if (hitCeiling) {
+            world.settleAtCeiling(movingBall);
+            pendingSettledBall = movingBall;
+            settleDelayFrames = 12;
+            movingBall = null;
+        } else if (hitBall) {
+            Ball settled = world.snapAndSettle(movingBall, movingBall.getVx(), movingBall.getVy());
+            world.applyImpact(settled, movingBall.getVx(), movingBall.getVy());
+            pendingSettledBall = settled;
+            settleDelayFrames = 12;
+            movingBall = null;
+        }
+    }
+
+    private void updateDuo() {
+        double rotSpeed = 0.04;
+        if (p1Left)  sweepAngle = Math.max(-1.4, sweepAngle - rotSpeed);
+        if (p1Right) sweepAngle = Math.min(1.4,  sweepAngle + rotSpeed);
+        if (p2Left)  sweepAngle2 = Math.max(-1.4, sweepAngle2 - rotSpeed);
+        if (p2Right) sweepAngle2 = Math.min(1.4,  sweepAngle2 + rotSpeed);
+
+        shooter.setAngle(sweepAngle);
+        shooter2.setAngle(sweepAngle2);
+
+        updatePlayer(1);
+        updatePlayer(2);
+    }
+
+    private void updatePlayer(int p) {
+        BallWorld w = (p == 1) ? world : world2;
+        Shooter s = (p == 1) ? shooter : shooter2;
+        Ball mb = (p == 1) ? movingBall : movingBall2;
+        AnimationManager am = (p == 1) ? animationManager : animationManager2;
+        
+        am.update();
+        w.updateVisuals();
+
+        if (mb != null) {
+            double preX = mb.getX(), preY = mb.getY();
+            mb.update(300);
+            
+            double hitDist = w.sweptCollision(preX, preY, mb.getVx(), mb.getVy(), mb.getRadius());
+            boolean hitBall = hitDist >= 0;
+            boolean outOfBounds = mb.getY() - mb.getRadius() > screenHeight;
+            boolean hitCeiling  = mb.getY() - mb.getRadius() <= w.getCeilingY();
+
+            if (outOfBounds) {
+                if (p == 1) { movingBall = null; shooter.loadNextBall(); }
+                else        { movingBall2 = null; shooter2.loadNextBall(); }
+            } else if (hitCeiling) {
+                w.settleAtCeiling(mb);
+                if (p == 1) {
+                    movingBall = null;
+                    pendingSettledBall = mb;
+                    settleDelayFrames = 8;
+                } else {
+                    movingBall2 = null;
+                    pendingSettledBall2 = mb;
+                    settleDelayFrames2 = 8;
+                }
+            } else if (hitBall) {
+                // Back out to collision point
+                double speed = Math.sqrt(mb.getVx()*mb.getVx() + mb.getVy()*mb.getVy());
+                if (speed > 0) {
+                    double ratio = hitDist / speed;
+                    mb.setX(preX + mb.getVx() * ratio);
+                    mb.setY(preY + mb.getVy() * ratio);
+                }
+                if (p == 1) settleMovingBall(); else settleMovingBall2();
+            }
+        }
+
+        if (p == 1) {
+            if (pendingSettledBall != null) {
+                settleDelayFrames--;
+                if (settleDelayFrames <= 0) {
+                    processSettledDuo(pendingSettledBall, 1);
+                    pendingSettledBall = null;
+                    shooter.loadNextBall();
+                }
+            }
+        } else {
+            if (pendingSettledBall2 != null) {
+                settleDelayFrames2--;
+                if (settleDelayFrames2 <= 0) {
+                    processSettledDuo(pendingSettledBall2, 2);
+                    pendingSettledBall2 = null;
+                    shooter2.loadNextBall();
+                }
+            }
+        }
+
+        if (w.isEmpty()) {
+            winDuoLevel(p);
+        }
+        
+        if (w.hasReachedBottom()) {
+            w.clearAll();
+            loadDuoLevel(p); // Reset if lost
+        }
+    }
+
+    private void winDuoLevel(int p) {
+        if (p == 1) {
+            duoWinsP1++;
+            if (duoWinsP1 >= 15) {
+                gameState = GameState.DUO_WIN_P1;
+                SoundManager.play("win");
+            } else {
+                levelManager.next();
+                loadDuoLevel(1);
+            }
+        } else {
+            duoWinsP2++;
+            if (duoWinsP2 >= 15) {
+                gameState = GameState.DUO_WIN_P2;
+                SoundManager.play("win");
+            } else {
+                levelManager2.next();
+                loadDuoLevel(2);
+            }
+        }
+    }
+
+    private void shootDuoBall(int p) {
+        Shooter s = (p == 1) ? shooter : shooter2;
+        Ball b = s.getCurrentBall();
+        if (b == null) return;
+        
+        double speed = 10;
+        double angle = (p == 1) ? sweepAngle : sweepAngle2;
+        double vx = Math.sin(angle) * speed;
+        double vy = -Math.cos(angle) * speed;
+        b.setVelocity(vx, vy);
+        
+        synchronized (this) {
+            if (p == 1) movingBall = b; else movingBall2 = b;
+        }
+        s.clearCurrentBall();
+        SoundManager.play("shoot");
+    }
+
+    private void settleMovingBall() {
+        if (movingBall == null) return;
+        Ball b = world.snapAndSettle(movingBall, movingBall.getVx(), movingBall.getVy());
+        movingBall = null;
+        pendingSettledBall = b;
+        settleDelayFrames = 8;
+    }
+
+    private void settleMovingBall2() {
+        if (movingBall2 == null) return;
+        Ball b = world2.snapAndSettle(movingBall2, movingBall2.getVx(), movingBall2.getVy());
+        movingBall2 = null;
+        pendingSettledBall2 = b;
+        settleDelayFrames2 = 8;
+    }
+
+    private void processSettledDuo(Ball b, int p) {
+        if (p == 1) {
+            processSettledGeneric(b, world, clusterFinder, animationManager, floatingFinder, shooter, true);
+        } else {
+            processSettledGeneric(b, world2, clusterFinder2, animationManager2, floatingFinder2, shooter2, true);
+        }
+    }
+
+    private void removeBallsWithExplosionsDuo(List<Ball> targets, int p) {
+        if (p == 1) {
+            removeBallsWithExplosionsGeneric(targets, world, animationManager, floatingFinder, shooter, true);
+        } else {
+            removeBallsWithExplosionsGeneric(targets, world2, animationManager2, floatingFinder2, shooter2, true);
+        }
+    }
+
+    private void shootBall(int mx, int my) {
+        if (shooter.getCurrentBall() == null) return;
+        if (!isAngleValid(mx, my)) return; // Angle check
+
+        double sx = shooter.getX(), sy = shooter.getY();
+        double dx = mx - sx, dy = mouseY - sy;
+        double dist = Math.sqrt(dx * dx + dy * dy);
+        if (dist < 1) return;
+        double speed = 15.0;
+        movingBall = shooter.getCurrentBall();
+        movingBall.setVelocity((dx / dist) * speed, (dy / dist) * speed);
+        shooter.clearCurrentBall();
+        gameState = GameState.FIRING;
+        SoundManager.play("shoot");
+    }
+
+    private boolean isAngleValid(int mx, int my) {
+        double dx = mx - shooter.getX();
+        double dy = my - shooter.getY();
+        double angle = Math.atan2(-dy, dx); // Angle in radians
+        // 160 degrees top arc = from 10 deg to 170 deg
+        double minAngle = Math.toRadians(10);
+        double maxAngle = Math.toRadians(170);
+        return angle >= minAngle && angle <= maxAngle;
+    }
+
+    private void processSettled(Ball settled) {
+        processSettledGeneric(settled, world, clusterFinder, animationManager, floatingFinder, shooter, false);
+    }
+
+    private void processSettledGeneric(Ball settled, BallWorld w, ClusterFinder cf, AnimationManager am, FloatingFinder ff, Shooter s, boolean isDuo) {
+        List<Ball> neighbors = w.getNeighbors(settled);
+        
+        // SPECIAL CASE: MULTI_COLOR interaction
+        for (Ball nb : neighbors) {
+            if (nb.getType() == Ball.Type.MULTI_COLOR) {
+                if (settled.getType() == Ball.Type.MULTI_COLOR) {
+                    if (isDuo) winDuoLevel(s == shooter ? 1 : 2);
+                    else winLevel();
+                    return;
+                } else {
+                    handleMultiColorImpactGeneric(settled, nb, w, am, ff, s, isDuo);
+                    return;
+                }
+            }
+        }
+        if (settled.getType() == Ball.Type.MULTI_COLOR) {
+            handleMultiColorImpactGeneric(settled, null, w, am, ff, s, isDuo);
+            return;
+        }
+
+        // BOMB logic
+        for (Ball nb : neighbors) {
+            if (nb.getType() == Ball.Type.BOMB) {
+                triggerBombExplosionGeneric(nb, w, am, ff, s, isDuo);
+                return;
+            }
+        }
+        if (settled.getType() == Ball.Type.BOMB) {
+            triggerBombExplosionGeneric(settled, w, am, ff, s, isDuo);
+            return;
+        }
+
+        // Standard cluster logic
+        List<Ball> cluster = cf.findCluster(settled);
+        if (cluster.size() >= 3) {
+            removeBallsWithExplosionsGeneric(cluster, w, am, ff, s, isDuo);
+            SoundManager.play("pop");
+        } else {
+            SoundManager.play("pop");
+        }
+        am.spawnBounceRipple(settled.getX(), settled.getY(), settled.getColor());
+
+        for (Ball b : new ArrayList<>(w.getBalls())) {
+            if (b.getType() == Ball.Type.COUNTDOWN) {
+                b.decrementCountdown();
+                if (b.getCountdown() <= 0) {
+                    if (isDuo) {
+                        w.clearAll();
+                        loadDuoLevel(s == shooter ? 1 : 2);
+                    } else {
+                        triggerCountdownDeath(b);
+                    }
+                    return;
+                }
+            }
+        }
+
+        if (isDuo) {
+            if (w.isEmpty()) winDuoLevel(s == shooter ? 1 : 2);
+        } else {
+            double dangerFactor = levelManager.getDifficulty().getDangerYFactor();
+            int dangerY = (int)(screenHeight * dangerFactor);
+            for (Ball b : w.getBalls()) {
+                if (b.getY() + b.getRadius() > dangerY) {
+                    gameState = GameState.GAME_OVER;
+                    SoundManager.play("lose");
+                    SoundManager.stopBGM();
+                    return;
+                }
+            }
+            if (w.isEmpty()) winLevel();
+        }
+    }
+
+    private void winLevel() {
+        if (gameState == GameState.LEVEL_CLEAR) return;
+        gameState = GameState.LEVEL_CLEAR;
+        SoundManager.play("win");
+        
+        // Unlock and save progress
+        levelManager.unlockNextLevel();
+        int unlocked = levelManager.getCurrentUnlocked();
+        Difficulty diff = levelManager.getDifficulty();
+        if (diff == Difficulty.EASY) currentUser.easyUnlocked = Math.max(currentUser.easyUnlocked, unlocked);
+        else if (diff == Difficulty.MEDIUM) currentUser.mediumUnlocked = Math.max(currentUser.mediumUnlocked, unlocked);
+        else if (diff == Difficulty.HARD) currentUser.hardUnlocked = Math.max(currentUser.hardUnlocked, unlocked);
+        SaveManager.save(currentUser);
+
+        animationManager.startSlideOut(new ArrayList<>(world.getBalls()));
+        world.removeBalls(new ArrayList<>(world.getBalls()));
+    }
+
+    private void handleMultiColorImpact(Ball settled, Ball multi) {
+        handleMultiColorImpactGeneric(settled, multi, world, animationManager, floatingFinder, shooter, false);
+    }
+
+    private void handleMultiColorImpactGeneric(Ball settled, Ball multi, BallWorld w, AnimationManager am, FloatingFinder ff, Shooter s, boolean isDuo) {
+        Color targetColor;
+        if (settled.getType() == Ball.Type.NORMAL) {
+            targetColor = settled.getColor();
+        } else {
+            List<Ball> neighbors = w.getNeighbors(settled);
+            if (neighbors.isEmpty()) {
+                w.removeBalls(List.of(settled));
+                return;
+            }
+            targetColor = neighbors.get(0).getColor();
+        }
+
+        List<Ball> toRemove = new ArrayList<>();
+        for (Ball b : w.getBalls()) {
+            if (b.getColor().equals(targetColor)) toRemove.add(b);
+        }
+        toRemove.add(settled);
+        if (multi != null) toRemove.add(multi);
+
+        removeBallsWithExplosionsGeneric(toRemove, w, am, ff, s, isDuo);
+        SoundManager.play("pop");
+    }
+
+    /**
+     * Removes balls while checking if any of them are bombs or are adjacent to bombs. 
+     * If a bomb is involved, it triggers its explosion.
+     */
+    private void removeBallsWithExplosions(List<Ball> targets) {
+        removeBallsWithExplosionsGeneric(targets, world, animationManager, floatingFinder, shooter, false);
+    }
+
+    private void removeBallsWithExplosionsGeneric(List<Ball> targets, BallWorld w, AnimationManager am, FloatingFinder ff, Shooter s, boolean isDuo) {
+        if (targets.isEmpty()) return;
+        List<Ball> bombsToExplode = new ArrayList<>();
+        for (Ball b : targets) {
+            if (b.getType() == Ball.Type.BOMB) {
+                if (!bombsToExplode.contains(b)) bombsToExplode.add(b);
+            }
+            for (Ball nb : w.getNeighbors(b)) {
+                if (nb.getType() == Ball.Type.BOMB && !targets.contains(nb)) {
+                    if (!bombsToExplode.contains(nb)) bombsToExplode.add(nb);
+                }
+            }
+        }
+        
+        am.spawnFallingBalls(targets);
+        w.removeBalls(targets);
+        
+        boolean bombTriggered = false;
+        for (Ball bomb : bombsToExplode) {
+            if (w.getBalls().contains(bomb)) {
+                triggerBombExplosionGeneric(bomb, w, am, ff, s, isDuo);
+                bombTriggered = true;
+            }
+        }
+        
+        if (!bombTriggered) {
+            List<Ball> floating = ff.findFloating();
+            if (!floating.isEmpty()) {
+                removeBallsWithExplosionsGeneric(floating, w, am, ff, s, isDuo); 
+            }
+        }
+    }
+
+    private void triggerBombExplosion(Ball bomb) {
+        triggerBombExplosionGeneric(bomb, world, animationManager, floatingFinder, shooter, false);
+    }
+
+    private void triggerBombExplosionGeneric(Ball bomb, BallWorld w, AnimationManager am, FloatingFinder ff, Shooter s, boolean isDuo) {
+        Set<Ball> allExploded = new HashSet<>();
+        Queue<Ball> queue = new LinkedList<>();
+        queue.add(bomb);
+        allExploded.add(bomb);
+        double blastRadius = bomb.getRadius() * 2 * 2.5;
+        while (!queue.isEmpty()) {
+            Ball b = queue.poll();
+            for (Ball other : w.getBalls()) {
+                if (allExploded.contains(other)) continue;
+                double dx = other.getX() - b.getX(), dy = other.getY() - b.getY();
+                if (Math.sqrt(dx*dx + dy*dy) <= blastRadius) {
+                    allExploded.add(other);
+                    if (other.getType() == Ball.Type.BOMB) queue.add(other);
+                }
+            }
+        }
+        
+        List<Ball> toRemove = new ArrayList<>(allExploded);
+        removeBallsWithExplosionsGeneric(toRemove, w, am, ff, s, isDuo);
+        
+        s.loadNextBall();
+        if (!isDuo) gameState = GameState.AIMING;
+    }
+
+    private void triggerCountdownDeath(Ball b) {
+        gameState = GameState.GAME_OVER;
+        countdownDeathBall = b;
+        deathFrame = 0;
+        SoundManager.play("lose");
+        SoundManager.stopBGM();
+    }
+
+    @Override
+    public void paintComponent(Graphics g) {
+        super.paintComponent(g);
+        Graphics2D g2 = (Graphics2D) g;
+        g2.setRenderingHint(RenderingHints.KEY_ANTIALIASING, RenderingHints.VALUE_ANTIALIAS_ON);
+        g2.setRenderingHint(RenderingHints.KEY_TEXT_ANTIALIASING, RenderingHints.VALUE_TEXT_ANTIALIAS_ON);
+
+        GradientPaint bgGrad = new GradientPaint(0, 0, new Color(0x1a1a2e), 0, screenHeight, new Color(0x16213e));
+        g2.setPaint(bgGrad);
+        g2.fillRect(0, 0, screenWidth, screenHeight);
+
+        // HUD BAR
+        g2.setColor(new Color(0x0d0d1a));
+        g2.fillRect(0, 0, screenWidth, (int) CEIL_Y);
+        g2.setFont(new Font("Arial", Font.BOLD, 14));
+        g2.setColor(Color.WHITE);
+        LevelData cur = levelManager.getCurrent();
+        int levelNum  = levelManager.getCurrentIndex() + 1;
+        int totalLevels = levelManager.getDifficulty().getTotalLevels();
+        String leftHUD  = (cur != null) ? "LEVEL " + levelNum + " / " + totalLevels : "LEVEL - / " + totalLevels;
+        String rightHUD = "BALLS: " + world.getBalls().size();
+        drawMuteButton(g2, 12, 8);
+        g2.setColor(Color.WHITE);
+        g2.drawString(leftHUD, 50, 20);
+        FontMetrics fm = g2.getFontMetrics();
+        g2.drawString(rightHUD, screenWidth - fm.stringWidth(rightHUD) - 50, 20);
+
+        // TIMER
+        if (levelTimeRemaining > 0 && gameState != GameState.STARTING_LEVEL && gameState != GameState.MENU) {
+            String timeStr = "TIME: " + levelTimeRemaining + "s";
+            g2.setFont(new Font("Arial", Font.BOLD, 18));
+            g2.setColor(Color.YELLOW);
+            int tw = g2.getFontMetrics().stringWidth(timeStr);
+            g2.drawString(timeStr, (screenWidth - tw) / 2, 21);
+        }
+
+        if (gameState != GameState.MENU) {
+            g2.setColor(Color.WHITE);
+            g2.fillRect(screenWidth - 30, 8, 6, 14);
+            g2.fillRect(screenWidth - 18, 8, 6, 14);
+        }
+        g2.setStroke(new BasicStroke(2f));
+        g2.setColor(new Color(150, 150, 220));
+        int cy = (int) world.getCeilingY();
+        g2.drawLine(0, cy, screenWidth, cy);
+        
+        // Optional: fill space above ceiling line for a "moving wall" look
+        if (cy > (int) CEIL_Y) {
+            g2.setColor(new Color(30, 30, 50, 180));
+            g2.fillRect(0, (int) CEIL_Y, screenWidth, cy - (int) CEIL_Y);
+        }
+        
+        if (gameState != GameState.MENU) {
+            double df = levelManager.getDifficulty().getDangerYFactor();
+            int dy = (int)(screenHeight * df);
+            g2.setStroke(new BasicStroke(2f, BasicStroke.CAP_BUTT, BasicStroke.JOIN_MITER, 1f, new float[]{10f, 5f}, 0f));
+            g2.setColor(new Color(255, 50, 50, 150));
+            g2.drawLine(0, dy, screenWidth, dy);
+            g2.setStroke(new BasicStroke(1f));
+            g2.setFont(new Font("Arial", Font.BOLD, 10));
+            g2.setColor(new Color(255, 80, 80, 200));
+            g2.drawString("DANGER", 5, dy - 3);
+        }
+
+        if (gameState == GameState.AIMING && isDragging && isAngleValid(mouseX, mouseY)) drawAimGuide(g2);
+        if (gameState != GameState.MENU) {
+            if (!animationManager.isSlidingOut()) world.draw(g2);
+            animationManager.draw(g2);
+            shooter.draw(g2);
+            if (movingBall != null) movingBall.draw(g2);
+        }
+
+        // Special ball legend
+        if (gameState == GameState.AIMING || gameState == GameState.FIRING) {
+            int lx = screenWidth - 120, ly = screenHeight - 130;
+            g2.setFont(new Font("Arial", Font.PLAIN, 10));
+            g2.setColor(Color.BLACK); g2.fillOval(lx, ly, 16, 16);
+            g2.setColor(new Color(255, 80, 80)); g2.drawOval(lx, ly, 16, 16);
+            g2.setColor(new Color(200, 200, 200)); g2.drawString("= Bomb (area)", lx + 20, ly + 12);
+            g2.setColor(new Color(255, 100, 0)); g2.fillOval(lx, ly + 22, 16, 16);
+            g2.setColor(Color.WHITE); g2.setFont(new Font("Arial", Font.BOLD, 10));
+            g2.drawString("5", lx + 5, ly + 34);
+            g2.setFont(new Font("Arial", Font.PLAIN, 10)); g2.setColor(new Color(200, 200, 200));
+            g2.drawString("= Countdown", lx + 20, ly + 34);
+            g2.setPaint(new java.awt.GradientPaint(lx, ly+44, Color.RED, lx+16, ly+60, Color.BLUE));
+            g2.fillOval(lx, ly + 44, 16, 16);
+            g2.setColor(Color.WHITE); g2.drawString("★", lx + 3, ly + 57);
+            g2.setPaint(null); g2.setColor(new Color(200, 200, 200));
+            g2.drawString("= Clear color", lx + 20, ly + 57);
+        }
+
+        if (countdownDeathBall != null && gameState == GameState.GAME_OVER) {
+            float darkAlpha = Math.min(1f, deathFrame / 60f) * 0.85f;
+            g2.setColor(new Color(0, 0, 0, (int)(darkAlpha * 255)));
+            g2.fillRect(0, 0, screenWidth, screenHeight);
+            if (deathFrame < 90) {
+                double pulse = 1.0 + 0.3 * Math.sin(deathFrame * 0.3);
+                g2.setColor(deathFrame % 10 < 5 ? Color.RED : new Color(255, 100, 0));
+                int bx = (int) countdownDeathBall.getX(), by = (int) countdownDeathBall.getY();
+                int dr = (int)(countdownDeathBall.getRadius() * pulse);
+                g2.fillOval(bx - dr, by - dr, dr * 2, dr * 2);
+            }
+        }
+
+        if (gameState == GameState.LOGIN) drawLoginOverlay(g2);
+        if (gameState == GameState.MODE_SELECT) drawModeSelectOverlay(g2);
+        if (gameState == GameState.MENU) drawMenuOverlay(g2);
+        if (gameState == GameState.DUO_PLAY) drawDuoMode(g2);
+        if (gameState == GameState.DUO_WIN_P1) drawDuoWin(g2, 1);
+        if (gameState == GameState.DUO_WIN_P2) drawDuoWin(g2, 2);
+        if (gameState == GameState.LEVEL_SELECT) drawLevelSelectOverlay(g2);
+        if (gameState == GameState.STARTING_LEVEL) drawIntroOverlay(g2);
+        if (gameState == GameState.PAUSED) drawPauseMenuOverlay(g2);
+        if (gameState == GameState.LEVEL_CLEAR) drawLevelClearOverlay(g2, levelNum);
+        if (gameState == GameState.GAME_OVER && (countdownDeathBall == null || deathFrame >= 90)) drawGameOverOverlay(g2);
+        if (gameState == GameState.YOU_WIN) drawYouWinOverlay(g2);
+        g2.dispose();
+    }
+
+    private void drawAimGuide(Graphics2D g2) {
+        double sx = shooter.getX(), sy = shooter.getY();
+        double dx = mouseX - sx, dy = mouseY - sy;
+        double dist = Math.sqrt(dx * dx + dy * dy);
+        if (dist < 1) return;
+        double ux = dx / dist, uy = dy / dist;
+        double remaining = 500.0, x1 = sx, y1 = sy, x2, y2;
+        if (Math.abs(ux) < 1e-9) { x2 = x1 + ux * remaining; y2 = y1 + uy * remaining; drawDashed(g2, x1, y1, x2, y2); return; }
+        double tWall = (ux < 0) ? (0 - x1) / ux : (screenWidth - x1) / ux;
+        if (tWall >= remaining) {
+            x2 = x1 + ux * remaining; y2 = y1 + uy * remaining; drawDashed(g2, x1, y1, x2, y2);
+        } else {
+            x2 = x1 + ux * tWall; y2 = y1 + uy * tWall; drawDashed(g2, x1, y1, x2, y2);
+            remaining -= tWall;
+            double rx = -ux, ry = uy;
+            double x3 = x2 + rx * remaining, y3 = y2 + ry * remaining;
+            drawDashed(g2, x2, y2, x3, y3);
+        }
+    }
+
+    private void drawDashed(Graphics2D g2, double x1, double y1, double x2, double y2) {
+        Stroke old = g2.getStroke();
+        g2.setStroke(new BasicStroke(1.5f, BasicStroke.CAP_ROUND, BasicStroke.JOIN_ROUND, 1f, new float[]{8f, 5f}, 0f));
+        g2.setColor(new Color(255, 255, 255, 180));
+        g2.drawLine((int) x1, (int) y1, (int) x2, (int) y2);
+        g2.setStroke(old);
+    }
+
+    private void drawMenuOverlay(Graphics2D g2) {
+        SoundManager.setBGMVolume(1.0);
+        drawDimRect(g2, 160);
+        g2.setFont(new Font("Arial", Font.BOLD, 48)); g2.setColor(Color.WHITE);
+        drawCentered(g2, "PUZZLE BOBBLE", 200);
+        g2.setFont(new Font("Arial", Font.BOLD, 24));
+        drawButton(g2, "EASY (15 Levels)", screenHeight / 2 - 40, new Color(50, 200, 50));
+        drawButton(g2, "MEDIUM (25 Levels)", screenHeight / 2 + 20, new Color(200, 200, 50));
+        drawButton(g2, "HARD (35 Levels)", screenHeight / 2 + 80, new Color(200, 50, 50));
+        drawButton(g2, "BACK", screenHeight / 2 + 140, new Color(150, 50, 50));
+    }
+    
+    private void drawIntroOverlay(Graphics2D g2) {
+        int alpha = (int) (220 * Math.min(1.0, introTimer / 30.0));
+        drawDimRect(g2, alpha);
+        g2.setFont(new Font("Arial", Font.BOLD, 72));
+        g2.setColor(new Color(255, 255, 255, alpha));
+        drawCentered(g2, introDifficulty, screenHeight / 2 + 10);
+        g2.setStroke(new BasicStroke(4f));
+        g2.setColor(new Color(255, 255, 255, alpha / 2));
+        g2.drawLine(100, screenHeight / 2 + 30, screenWidth - 100, screenHeight / 2 + 30);
+        g2.setStroke(new BasicStroke(1f));
+    }
+    
+    private void drawButton(Graphics2D g2, String text, int y, Color color) {
+        int w = 250, h = 40, x = (screenWidth - w) / 2;
+        boolean hover = (mouseX >= x && mouseX <= x + w && mouseY >= y && mouseY <= y + h);
+        double scale = hover ? (isDragging ? 0.92 : 1.08) : 1.0;
+        java.awt.geom.AffineTransform old = g2.getTransform();
+        g2.translate(x + w/2.0, y + h/2.0); g2.scale(scale, scale);
+        g2.setColor(color); g2.fillRoundRect(-w/2, -h/2, w, h, 10, 10);
+        g2.setColor(Color.WHITE); g2.drawRoundRect(-w/2, -h/2, w, h, 10, 10);
+        FontMetrics fm = g2.getFontMetrics();
+        g2.drawString(text, -fm.stringWidth(text) / 2, fm.getAscent() - fm.getHeight() / 2);
+        g2.setTransform(old);
+    }
+
+    private void drawLevelClearOverlay(Graphics2D g2, int levelNum) {
+        drawDimRect(g2, 160);
+        g2.setFont(new Font("Arial", Font.BOLD, 48)); g2.setColor(new Color(255, 220, 0));
+        drawCentered(g2, "✓ Level " + levelNum + " Clear!", screenHeight / 2 - 60);
+        
+        g2.setFont(new Font("Arial", Font.BOLD, 24));
+        if (levelManager.hasNext()) {
+            drawButton(g2, "Next Level", screenHeight / 2 + 20, new Color(50, 200, 50));
+        }
+        drawButton(g2, "Restart Level", screenHeight / 2 + 80, new Color(200, 200, 50));
+        drawButton(g2, "Main Menu", screenHeight / 2 + 140, new Color(200, 50, 50));
+    }
+
+    private void drawPauseMenuOverlay(Graphics2D g2) {
+        drawDimRect(g2, 160);
+        g2.setFont(new Font("Arial", Font.BOLD, 48)); g2.setColor(Color.WHITE);
+        drawCentered(g2, "PAUSED", 200);
+        g2.setFont(new Font("Arial", Font.BOLD, 24));
+        drawButton(g2, "Resume", screenHeight / 2 - 40, new Color(50, 200, 50));
+        drawButton(g2, "Restart Level", screenHeight / 2 + 20, new Color(200, 200, 50));
+        drawButton(g2, "Main Menu", screenHeight / 2 + 80, new Color(200, 50, 50));
+    }
+
+    private void drawGameOverOverlay(Graphics2D g2) {
+        drawDimRect(g2, 160);
+        g2.setFont(new Font("Arial", Font.BOLD, 48)); g2.setColor(new Color(220, 50, 50));
+        drawCentered(g2, "GAME OVER", 200);
+        g2.setFont(new Font("Arial", Font.BOLD, 24));
+        drawButton(g2, "Restart Level", screenHeight / 2 + 20, new Color(200, 200, 50));
+        drawButton(g2, "Main Menu", screenHeight / 2 + 80, new Color(200, 50, 50));
+    }
+
+    private void drawYouWinOverlay(Graphics2D g2) {
+        drawDimRect(g2, 160);
+        g2.setFont(new Font("Arial", Font.BOLD, 64)); g2.setColor(new Color(255, 215, 0));
+        drawCentered(g2, "YOU WIN!", screenHeight / 2 - 80);
+        g2.setFont(new Font("Arial", Font.BOLD, 24)); g2.setColor(Color.WHITE);
+        drawCentered(g2, "All " + levelManager.getDifficulty().getTotalLevels() + " Levels Complete!", screenHeight / 2 - 20);
+        
+        drawButton(g2, "Play Again", screenHeight / 2 + 20, new Color(50, 200, 50));
+        drawButton(g2, "Main Menu", screenHeight / 2 + 80, new Color(200, 50, 50));
+    }
+
+    private void drawLoginOverlay(Graphics2D g2) {
+        drawDimRect(g2, 255);
+        g2.setFont(new Font("Arial", Font.BOLD, 48)); g2.setColor(Color.WHITE);
+        drawCentered(g2, "LOGIN", 200);
+        
+        g2.setFont(new Font("Arial", Font.PLAIN, 24));
+        drawCentered(g2, "Enter Username:", screenHeight / 2 - 40);
+        
+        int tw = 300, th = 50, tx = (screenWidth - tw) / 2, ty = screenHeight / 2 - 20;
+        g2.setColor(new Color(40, 40, 80));
+        g2.fillRoundRect(tx, ty, tw, th, 10, 10);
+        g2.setColor(Color.CYAN);
+        g2.setStroke(new BasicStroke(2f));
+        g2.drawRoundRect(tx, ty, tw, th, 10, 10);
+        
+        g2.setColor(Color.WHITE);
+        g2.setFont(new Font("Arial", Font.BOLD, 28));
+        String text = loginInput.toString() + (System.currentTimeMillis() % 1000 < 500 ? "|" : "");
+        FontMetrics fm = g2.getFontMetrics();
+        g2.drawString(text, tx + (tw - fm.stringWidth(text)) / 2, ty + 35);
+        
+        drawButton(g2, "START GAME", screenHeight / 2 + 60, new Color(50, 200, 50));
+    }
+
+    private void drawLevelSelectOverlay(Graphics2D g2) {
+        drawDimRect(g2, 230);
+        g2.setFont(new Font("Arial", Font.BOLD, 42)); g2.setColor(Color.WHITE);
+        drawCentered(g2, "LEVEL SELECTION", 100);
+        g2.setFont(new Font("Arial", Font.BOLD, 20)); g2.setColor(Color.CYAN);
+        drawCentered(g2, levelManager.getDifficulty().name(), 135);
+        
+        int rows = 5, cols = 5;
+        int padding = 20, startY = 200;
+        int boxSize = (screenWidth - (cols + 1) * padding) / cols;
+        
+        int unlocked = levelManager.getCurrentUnlocked();
+        int total = levelManager.getDifficulty().getTotalLevels();
+        
+        for (int i = 0; i < total; i++) {
+            int r = i / cols;
+            int c = i % cols;
+            int bx = padding + c * (boxSize + padding);
+            int by = startY + r * (boxSize + padding);
+            
+            boolean lock = i >= unlocked;
+            g2.setColor(lock ? new Color(60, 60, 60) : new Color(50, 150, 250));
+            g2.fillRoundRect(bx, by, boxSize, boxSize, 10, 10);
+            g2.setColor(Color.WHITE);
+            g2.setStroke(new BasicStroke(2f));
+            g2.drawRoundRect(bx, by, boxSize, boxSize, 10, 10);
+            
+            if (lock) {
+                g2.setFont(new Font("Arial", Font.BOLD, 30));
+                drawCenteredInBox(g2, "🔒", bx, by, boxSize);
+            } else {
+                g2.setFont(new Font("Arial", Font.BOLD, 24));
+                drawCenteredInBox(g2, String.valueOf(i + 1), bx, by, boxSize);
+            }
+        }
+        
+        drawButton(g2, "BACK", screenHeight - 60, new Color(150, 50, 50));
+    }
+
+    private void drawModeSelectOverlay(Graphics2D g2) {
+        drawDimRect(g2, 200);
+        g2.setFont(new Font("Arial", Font.BOLD, 48)); g2.setColor(Color.WHITE);
+        drawCentered(g2, "CHOOSE MODE", 200);
+        drawButton(g2, "SINGLE PLAYER", screenHeight / 2 - 40, new Color(50, 150, 250));
+        drawButton(g2, "DUO VERSUS", screenHeight / 2 + 20, new Color(250, 100, 50));
+        drawButton(g2, "LOGOUT", screenHeight / 2 + 80, new Color(150, 50, 50));
+    }
+
+    private void drawDuoMode(Graphics2D g2) {
+        // Left side (P1)
+        drawDuoPlayer(g2, 0, world, shooter, animationManager, movingBall, duoWinsP1, levelManager);
+        // Right side (P2)
+        drawDuoPlayer(g2, 300, world2, shooter2, animationManager2, movingBall2, duoWinsP2, levelManager2);
+        
+        // Middle divider
+        g2.setColor(Color.WHITE);
+        g2.setStroke(new BasicStroke(3f));
+        g2.drawLine(300, 0, 300, screenHeight);
+        g2.setStroke(new BasicStroke(1f));
+
+        // Bottom Buttons
+        int bw = 120, bh = 40, by = screenHeight - 60;
+        int backX = 170, restartX = 310;
+
+        // BACK Button
+        g2.setColor(new Color(150, 50, 50));
+        g2.fillRoundRect(backX, by, bw, bh, 10, 10);
+        g2.setColor(Color.WHITE);
+        g2.drawRoundRect(backX, by, bw, bh, 10, 10);
+        g2.setFont(new Font("Arial", Font.BOLD, 14));
+        FontMetrics fm = g2.getFontMetrics();
+        g2.drawString("BACK", backX + (bw - fm.stringWidth("BACK")) / 2, by + 25);
+
+        // RESTART Button
+        g2.setColor(new Color(200, 100, 50));
+        g2.fillRoundRect(restartX, by, bw, bh, 10, 10);
+        g2.setColor(Color.WHITE);
+        g2.drawRoundRect(restartX, by, bw, bh, 10, 10);
+        g2.drawString("RESTART", restartX + (bw - fm.stringWidth("RESTART")) / 2, by + 25);
+    }
+
+    private void drawDuoPlayer(Graphics2D g2, int offsetX, BallWorld w, Shooter s, AnimationManager am, Ball mb, int wins, LevelManager lm) {
+        java.awt.geom.AffineTransform old = g2.getTransform();
+        g2.translate(offsetX, 0);
+        
+        // Draw ceiling
+        g2.setColor(new Color(60, 60, 60));
+        g2.fillRect(0, 0, 300, (int) w.getCeilingY());
+        
+        // Balls
+        for (Ball b : w.getBalls()) b.draw(g2);
+        am.draw(g2);
+        if (mb != null) mb.draw(g2);
+        
+        // Shooter & Aiming Arrow
+        s.draw(g2);
+        drawAimingArrowDuo(g2, s, s == shooter ? sweepAngle : sweepAngle2);
+        
+        // UI
+        g2.setColor(Color.WHITE);
+        g2.setFont(new Font("Arial", Font.BOLD, 16));
+        g2.drawString("Level: " + (lm.getCurrentIndex() + 1), 20, screenHeight - 65);
+        g2.drawString("Wins: " + wins + " / 15", 20, screenHeight - 40);
+        
+        g2.setTransform(old);
+    }
+
+    private void drawAimingArrowDuo(Graphics2D g2, Shooter s, double angle) {
+        double curX = s.getX();
+        double curY = s.getY();
+        double ux = Math.sin(angle);
+        double uy = -Math.cos(angle);
+        
+        double totalLen = screenHeight * 0.6;
+        double traveled = 0;
+        int step = 15;
+        
+        while (traveled < totalLen) {
+            double nextStep = Math.min(step, totalLen - traveled);
+            
+            // Check for wall hit (local width is 300)
+            double tWall = Double.MAX_VALUE;
+            if (ux < -1e-9) tWall = (0 - curX) / ux;
+            else if (ux > 1e-9) tWall = (300 - curX) / ux;
+            
+            if (tWall < nextStep) {
+                // Segment hits wall
+                double x2 = curX + ux * tWall;
+                double y2 = curY + uy * tWall;
+                float ratio = (float) traveled / (float) totalLen;
+                int alpha = (int) (180 * (1.0f - ratio));
+                g2.setColor(new Color(255, 255, 255, alpha));
+                g2.setStroke(new BasicStroke(2.5f));
+                g2.drawLine((int)curX, (int)curY, (int)x2, (int)y2);
+                
+                ux = -ux; // Reflect
+                curX = x2;
+                curY = y2;
+                traveled += tWall;
+            } else {
+                // Straight segment
+                double x2 = curX + ux * nextStep;
+                double y2 = curY + uy * nextStep;
+                float ratio = (float) traveled / (float) totalLen;
+                int alpha = (int) (180 * (1.0f - ratio));
+                g2.setColor(new Color(255, 255, 255, alpha));
+                g2.setStroke(new BasicStroke(2.5f));
+                g2.drawLine((int)curX, (int)curY, (int)x2, (int)y2);
+                
+                curX = x2;
+                curY = y2;
+                traveled += nextStep;
+            }
+        }
+    }
+
+    private void drawCenteredInBox(Graphics2D g2, String text, int bx, int by, int size) {
+        FontMetrics fm = g2.getFontMetrics();
+        g2.drawString(text, bx + (size - fm.stringWidth(text)) / 2, by + (size + fm.getAscent() / 2) / 2);
+    }
+
+    private void drawDuoWin(Graphics2D g2, int p) {
+        drawDimRect(g2, 200);
+        g2.setFont(new Font("Arial", Font.BOLD, 64));
+        g2.setColor(p == 1 ? Color.CYAN : Color.ORANGE);
+        drawCentered(g2, "PLAYER " + p + " WINS!", screenHeight / 2 - 30);
+        drawButton(g2, "REPLAY", screenHeight / 2 + 50, new Color(50, 200, 50));
+        drawButton(g2, "MENU", screenHeight / 2 + 110, new Color(150, 50, 50));
+    }
+
+    private void drawCentered(Graphics2D g2, String text, int y) {
+        FontMetrics fm = g2.getFontMetrics();
+        g2.drawString(text, (screenWidth - fm.stringWidth(text)) / 2, y);
+    }
+
+    private void drawDimRect(Graphics2D g2, int alpha) {
+        g2.setColor(new Color(0, 0, 0, alpha)); g2.fillRect(0, 0, screenWidth, screenHeight);
+    }
+    
+    private void drawMuteButton(Graphics2D g2, int x, int y) {
+        boolean muted = SoundManager.isMuted();
+        g2.setColor(Color.WHITE); g2.fillRect(x, y + 4, 6, 8);
+        int[] px = {x + 6, x + 15, x + 15}, py = {y + 4, y, y + 16};
+        g2.fillPolygon(px, py, 3);
+        if (muted) {
+            g2.setStroke(new BasicStroke(2f)); g2.setColor(new Color(255, 50, 50));
+            g2.drawLine(x + 18, y + 4, x + 26, y + 12); g2.drawLine(x + 26, y + 4, x + 18, y + 12);
+        } else {
+            g2.setStroke(new BasicStroke(1.5f)); g2.drawArc(x + 12, y + 2, 8, 12, -45, 90); g2.drawArc(x + 15, y - 2, 12, 20, -45, 90);
+        }
+        g2.setStroke(new BasicStroke(1f));
+    }
+}
