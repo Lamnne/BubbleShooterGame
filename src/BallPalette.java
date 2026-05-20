@@ -17,12 +17,12 @@ public final class BallPalette {
     private BallPalette() {}
 
     public static final Color[] COLORS = {
-        new Color(220,  40,  40),   // 1 — Red
-        new Color( 50,  90, 210),   // 2 — Blue
-        new Color( 30, 180,  50),   // 3 — Green
-        new Color(220, 200,   0),   // 4 — Yellow
-        new Color(150,   0, 200),   // 5 — Purple
-        new Color(230, 130,   0),   // 6 — Orange
+        new Color(235, 100, 110), // darker pastel red
+        new Color(245, 160,  80), // darker pastel orange
+        new Color(230, 200,  50), // darker pastel yellow
+        new Color(100, 200, 120), // darker pastel green
+        new Color(100, 170, 235), // darker pastel blue
+        new Color(160, 130, 220)  // darker pastel purple
     };
 
     /**

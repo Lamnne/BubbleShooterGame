@@ -131,109 +131,46 @@ public class GamePanel extends JPanel implements Runnable {
             }
         });
 
-        addMouseMotionListener(new MouseMotionAdapter() {
-            @Override
-            public void mouseMoved(MouseEvent e) {
-                mouseX = e.getX();
-                mouseY = e.getY();
-            }
-            @Override
-            public void mouseDragged(MouseEvent e) {
-                mouseX = e.getX();
-                mouseY = e.getY();
-            }
-        });
+        
 
         // Use KeyBindings for more reliable simultaneous input in Duo Mode
         InputMap im = getInputMap(WHEN_IN_FOCUSED_WINDOW);
         ActionMap amMap = getActionMap();
 
         im.put(KeyStroke.getKeyStroke(KeyEvent.VK_W, 0), "shootP1");
-        amMap.put("shootP1", new AbstractAction() {
-            @Override
-            public void actionPerformed(ActionEvent e) {
-                if (gameState == GameState.DUO_PLAY) {
-                    synchronized (GamePanel.this) {
-                        if (movingBall == null && pendingSettledBall == null) {
-                            shootDuoBall(1);
-                        }
-                    }
-                }
-            }
-        });
+        
 
         im.put(KeyStroke.getKeyStroke(KeyEvent.VK_UP, 0), "shootP2");
-        amMap.put("shootP2", new AbstractAction() {
-            @Override
-            public void actionPerformed(ActionEvent e) {
-                if (gameState == GameState.DUO_PLAY) {
-                    synchronized (GamePanel.this) {
-                        if (movingBall2 == null && pendingSettledBall2 == null) {
-                            shootDuoBall(2);
-                        }
-                    }
-                }
-            }
-        });
+        
 
         // Duo Movement Bindings
         im.put(KeyStroke.getKeyStroke(KeyEvent.VK_A, 0), "p1L_p");
-        amMap.put("p1L_p", new AbstractAction() { @Override public void actionPerformed(ActionEvent e) { p1Left = true; } });
+        
         im.put(KeyStroke.getKeyStroke(KeyEvent.VK_A, 0, true), "p1L_r");
-        amMap.put("p1L_r", new AbstractAction() { @Override public void actionPerformed(ActionEvent e) { p1Left = false; } });
+        
 
         im.put(KeyStroke.getKeyStroke(KeyEvent.VK_D, 0), "p1R_p");
-        amMap.put("p1R_p", new AbstractAction() { @Override public void actionPerformed(ActionEvent e) { p1Right = true; } });
+        
         im.put(KeyStroke.getKeyStroke(KeyEvent.VK_D, 0, true), "p1R_r");
-        amMap.put("p1R_r", new AbstractAction() { @Override public void actionPerformed(ActionEvent e) { p1Right = false; } });
+        
 
         im.put(KeyStroke.getKeyStroke(KeyEvent.VK_LEFT, 0), "p2L_p");
-        amMap.put("p2L_p", new AbstractAction() { @Override public void actionPerformed(ActionEvent e) { p2Left = true; } });
+        
         im.put(KeyStroke.getKeyStroke(KeyEvent.VK_LEFT, 0, true), "p2L_r");
-        amMap.put("p2L_r", new AbstractAction() { @Override public void actionPerformed(ActionEvent e) { p2Left = false; } });
+        
 
         im.put(KeyStroke.getKeyStroke(KeyEvent.VK_RIGHT, 0), "p2R_p");
-        amMap.put("p2R_p", new AbstractAction() { @Override public void actionPerformed(ActionEvent e) { p2Right = true; } });
+        
         im.put(KeyStroke.getKeyStroke(KeyEvent.VK_RIGHT, 0, true), "p2R_r");
-        amMap.put("p2R_r", new AbstractAction() { @Override public void actionPerformed(ActionEvent e) { p2Right = false; } });
+        
 
         im.put(KeyStroke.getKeyStroke(KeyEvent.VK_S, 0), "swapP1");
-        amMap.put("swapP1", new AbstractAction() {
-            @Override
-            public void actionPerformed(ActionEvent e) {
-                if (gameState == GameState.DUO_PLAY) shooter.swapBalls();
-            }
-        });
+        
 
         im.put(KeyStroke.getKeyStroke(KeyEvent.VK_DOWN, 0), "swapP2");
-        amMap.put("swapP2", new AbstractAction() {
-            @Override
-            public void actionPerformed(ActionEvent e) {
-                if (gameState == GameState.DUO_PLAY) shooter2.swapBalls();
-            }
-        });
+        
 
-        addKeyListener(new KeyAdapter() {
-            @Override
-            public void keyPressed(KeyEvent e) {
-                if (gameState == GameState.LOGIN) {
-                    if (e.getKeyCode() == KeyEvent.VK_ENTER && loginInput.length() > 0) {
-                        login();
-                    } else if (e.getKeyCode() == KeyEvent.VK_BACK_SPACE && loginInput.length() > 0) {
-                        loginInput.deleteCharAt(loginInput.length() - 1);
-                    } else {
-                        char c = e.getKeyChar();
-                        if (Character.isLetterOrDigit(c) && loginInput.length() < 12) {
-                            loginInput.append(c);
-                        }
-                    }
-                } else if (e.getKeyCode() == KeyEvent.VK_R
-                        && (gameState == GameState.GAME_OVER
-                         || gameState == GameState.YOU_WIN)) {
-                    resetGame();
-                }
-            }
-        });
+        
         SoundManager.startBGM();
     }
 
@@ -441,7 +378,6 @@ public class GamePanel extends JPanel implements Runnable {
         loadDuoLevel(2);
         
         gameState = GameState.DUO_PLAY;
-        SoundManager.setBGMVolume(0.2);
         SoundManager.startBGM();
     }
 
@@ -518,7 +454,6 @@ public class GamePanel extends JPanel implements Runnable {
 
     private void startLoadedLevel() {
         SoundManager.play("click");
-        SoundManager.setBGMVolume(0.2);
         loadLevel();
         shooter = new Shooter(screenWidth / 2, screenHeight - 60, levelManager.getDifficulty().getMaxColors());
         shooter.loadNextBall();
@@ -531,10 +466,7 @@ public class GamePanel extends JPanel implements Runnable {
         int bw = 250, bh = 40, bx = (screenWidth - bw) / 2;
         int resumeY = screenHeight / 2 - 40, restartY = screenHeight / 2 + 20, menuY = screenHeight / 2 + 80;
         if (x >= bx && x <= bx + bw) {
-            if (y >= resumeY && y <= resumeY + bh) {
-                gameState = GameState.AIMING;
-                SoundManager.setBGMVolume(0.2);
-            }
+            if (y >= resumeY && y <= resumeY + bh) gameState = GameState.AIMING;
             else if (y >= restartY && y <= restartY + bh) restartLevel();
             else if (y >= menuY && y <= menuY + bh) {
                 gameState = GameState.MENU;
@@ -566,7 +498,6 @@ public class GamePanel extends JPanel implements Runnable {
                 levelManager.next();
                 loadLevel();
                 gameState = GameState.AIMING;
-                SoundManager.setBGMVolume(0.2);
             } else if (y >= restartY && y <= restartY + bh) {
                 restartLevel();
             } else if (y >= menuY && y <= menuY + bh) {
@@ -596,7 +527,7 @@ public class GamePanel extends JPanel implements Runnable {
     
     private void startGame(Difficulty diff) {
         SoundManager.play("click");
-        SoundManager.setBGMVolume(0.2);
+        SoundManager.setBGMVolume(0.3);
         SoundManager.startBGM();
         levelManager.setDifficulty(diff);
         shooter = new Shooter(screenWidth / 2, screenHeight - 60, diff.getMaxColors());
@@ -608,7 +539,7 @@ public class GamePanel extends JPanel implements Runnable {
 
     private void restartLevel() {
         SoundManager.play("click");
-        SoundManager.setBGMVolume(0.2);
+        SoundManager.setBGMVolume(0.3);
         SoundManager.startBGM();
         
         movingBall = null;
@@ -904,7 +835,21 @@ public class GamePanel extends JPanel implements Runnable {
         }
     }
 
+    private void shootBall(int mx, int my) {
+        if (shooter.getCurrentBall() == null) return;
+        if (!isAngleValid(mx, my)) return; // Angle check
 
+        double sx = shooter.getX(), sy = shooter.getY();
+        double dx = mx - sx, dy = mouseY - sy;
+        double dist = Math.sqrt(dx * dx + dy * dy);
+        if (dist < 1) return;
+        double speed = 15.0;
+        movingBall = shooter.getCurrentBall();
+        movingBall.setVelocity((dx / dist) * speed, (dy / dist) * speed);
+        shooter.clearCurrentBall();
+        gameState = GameState.FIRING;
+        SoundManager.play("shoot");
+    }
 
     private boolean isAngleValid(int mx, int my) {
         double dx = mx - shooter.getX();
@@ -914,23 +859,6 @@ public class GamePanel extends JPanel implements Runnable {
         double minAngle = Math.toRadians(10);
         double maxAngle = Math.toRadians(170);
         return angle >= minAngle && angle <= maxAngle;
-    }
-
-    // Shoot a ball based on mouse click coordinates
-    private void shootBall(int mx, int my) {
-        if (shooter.getCurrentBall() == null) return;
-        if (!isAngleValid(mx, my)) return; // Angle check
-
-        double sx = shooter.getX(), sy = shooter.getY();
-        double dx = mx - sx, dy = my - sy;
-        double dist = Math.sqrt(dx * dx + dy * dy);
-        if (dist < 1) return;
-        double speed = 15.0;
-        movingBall = shooter.getCurrentBall();
-        movingBall.setVelocity((dx / dist) * speed, (dy / dist) * speed);
-        shooter.clearCurrentBall();
-        gameState = GameState.FIRING;
-        SoundManager.play("shoot");
     }
 
     private void processSettled(Ball settled) {
@@ -1143,14 +1071,7 @@ public class GamePanel extends JPanel implements Runnable {
         g2.setRenderingHint(RenderingHints.KEY_ANTIALIASING, RenderingHints.VALUE_ANTIALIAS_ON);
         g2.setRenderingHint(RenderingHints.KEY_TEXT_ANTIALIASING, RenderingHints.VALUE_TEXT_ANTIALIAS_ON);
 
-        GradientPaint bgGrad;
-        if (gameState == GameState.LOGIN || gameState == GameState.MODE_SELECT || gameState == GameState.MENU || gameState == GameState.LEVEL_SELECT) {
-            // Light pastel lavender-blue background for menus/selection screens
-            bgGrad = new GradientPaint(0, 0, new Color(0xE8F0FE), 0, screenHeight, new Color(0xD2E3FC));
-        } else {
-            // Light pastel pink background for active gameplay screens
-            bgGrad = new GradientPaint(0, 0, new Color(0xFFEEF0), 0, screenHeight, new Color(0xFFD1DC));
-        }
+        GradientPaint bgGrad = new GradientPaint(0, 0, new Color(0x1a1a2e), 0, screenHeight, new Color(0x16213e));
         g2.setPaint(bgGrad);
         g2.fillRect(0, 0, screenWidth, screenHeight);
 
@@ -1315,21 +1236,16 @@ public class GamePanel extends JPanel implements Runnable {
     }
     
     private void drawButton(Graphics2D g2, String text, int y, Color color) {
-        Font originalFont = g2.getFont();
-        g2.setFont(new Font("Arial", Font.BOLD, 20)); // Ensure clean, legible size for all buttons
-        FontMetrics fm = g2.getFontMetrics();
-        int textW = fm.stringWidth(text);
-        int w = Math.max(260, textW + 40); // Dynamically scale button width if text is long
-        int h = 40, x = (screenWidth - w) / 2;
+        int w = 250, h = 40, x = (screenWidth - w) / 2;
         boolean hover = (mouseX >= x && mouseX <= x + w && mouseY >= y && mouseY <= y + h);
         double scale = hover ? (isDragging ? 0.92 : 1.08) : 1.0;
         java.awt.geom.AffineTransform old = g2.getTransform();
         g2.translate(x + w/2.0, y + h/2.0); g2.scale(scale, scale);
         g2.setColor(color); g2.fillRoundRect(-w/2, -h/2, w, h, 10, 10);
         g2.setColor(Color.WHITE); g2.drawRoundRect(-w/2, -h/2, w, h, 10, 10);
-        g2.drawString(text, -textW / 2, (fm.getAscent() - fm.getDescent()) / 2);
+        FontMetrics fm = g2.getFontMetrics();
+        g2.drawString(text, -fm.stringWidth(text) / 2, fm.getAscent() - fm.getHeight() / 2);
         g2.setTransform(old);
-        g2.setFont(originalFont);
     }
 
     private void drawLevelClearOverlay(Graphics2D g2, int levelNum) {
@@ -1376,32 +1292,27 @@ public class GamePanel extends JPanel implements Runnable {
     }
 
     private void drawLoginOverlay(Graphics2D g2) {
-        // Pastel light blue-gray gradient background for login screen
-        GradientPaint loginGrad = new GradientPaint(0, 0, new Color(0xE0F0FF), 0, screenHeight, new Color(0xB3D7FF));
-        g2.setPaint(loginGrad);
-        g2.fillRect(0, 0, screenWidth, screenHeight);
-        g2.setPaint(null);
-
-        g2.setFont(new Font("Arial", Font.BOLD, 48)); g2.setColor(new Color(0x2C3E50));
+        drawDimRect(g2, 255);
+        g2.setFont(new Font("Arial", Font.BOLD, 48)); g2.setColor(Color.WHITE);
         drawCentered(g2, "LOGIN", 200);
         
-        g2.setFont(new Font("Arial", Font.PLAIN, 24)); g2.setColor(new Color(0x34495E));
+        g2.setFont(new Font("Arial", Font.PLAIN, 24));
         drawCentered(g2, "Enter Username:", screenHeight / 2 - 40);
         
         int tw = 300, th = 50, tx = (screenWidth - tw) / 2, ty = screenHeight / 2 - 20;
-        g2.setColor(Color.WHITE);
+        g2.setColor(new Color(40, 40, 80));
         g2.fillRoundRect(tx, ty, tw, th, 10, 10);
-        g2.setColor(new Color(0xBDC3C7));
+        g2.setColor(Color.CYAN);
         g2.setStroke(new BasicStroke(2f));
         g2.drawRoundRect(tx, ty, tw, th, 10, 10);
         
-        g2.setColor(new Color(0x2C3E50));
+        g2.setColor(Color.WHITE);
         g2.setFont(new Font("Arial", Font.BOLD, 28));
         String text = loginInput.toString() + (System.currentTimeMillis() % 1000 < 500 ? "|" : "");
         FontMetrics fm = g2.getFontMetrics();
         g2.drawString(text, tx + (tw - fm.stringWidth(text)) / 2, ty + 35);
         
-        drawButton(g2, "START GAME", screenHeight / 2 + 60, new Color(46, 204, 113));
+        drawButton(g2, "START GAME", screenHeight / 2 + 60, new Color(50, 200, 50));
     }
 
     private void drawLevelSelectOverlay(Graphics2D g2) {
@@ -1445,7 +1356,7 @@ public class GamePanel extends JPanel implements Runnable {
 
     private void drawModeSelectOverlay(Graphics2D g2) {
         drawDimRect(g2, 200);
-        g2.setFont(new Font("Arial", Font.BOLD, 36)); g2.setColor(Color.WHITE);
+        g2.setFont(new Font("Arial", Font.BOLD, 48)); g2.setColor(Color.WHITE);
         drawCentered(g2, "CHOOSE MODE", 200);
         drawButton(g2, "SINGLE PLAYER", screenHeight / 2 - 40, new Color(50, 150, 250));
         drawButton(g2, "DUO VERSUS", screenHeight / 2 + 20, new Color(250, 100, 50));

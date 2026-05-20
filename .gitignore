@@ -1,0 +1,16 @@
+# Ignore Java build output
+bin/
+out/
+*.class
+*.log
+*.tmp
+
+# Ignore front-end dependencies and build artifacts
+Improve game interface design/node_modules/
+Improve game interface design/dist/
+Improve game interface design/.pnp*
+Improve game interface design/*.log
+
+# Ignore OS files
+.DS_Store
+Thumbs.db
