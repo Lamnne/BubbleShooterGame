@@ -1,6 +1,10 @@
+import javax.imageio.ImageIO;
 import javax.swing.*;
 import java.awt.*;
 import java.awt.event.*;
+import java.awt.image.BufferedImage;
+import java.io.File;
+import java.io.IOException;
 import java.util.*;
 import java.util.List;
 
@@ -65,6 +69,19 @@ public class GamePanel extends JPanel implements Runnable {
     int  levelTimeRemaining = 0;
     long lastSecondTick = 0;
 
+    // Menu background cycle
+    private static final String[] MENU_BACKGROUND_FILES = {
+        "src/Background/Br1.png",
+        "src/Background/Br2.png",
+        "src/Background/Br3.png"
+    };
+    private BufferedImage[] menuBackgrounds = new BufferedImage[MENU_BACKGROUND_FILES.length];
+    private int menuBackgroundIndex = 0;
+    private int nextMenuBackgroundIndex = 0;
+    private float menuBackgroundFade = 1f;
+    private boolean menuBackgroundTransitioning = false;
+    private int menuBackgroundTicks = 0;
+
     public GamePanel() {
         setPreferredSize(new Dimension(screenWidth, screenHeight));
         setBackground(new Color(26, 26, 46));
@@ -72,6 +89,7 @@ public class GamePanel extends JPanel implements Runnable {
         setFocusable(true);
 
         initGame();
+        loadMenuBackgrounds();
 
         addMouseListener(new MouseAdapter() {
             @Override
@@ -100,7 +118,12 @@ public class GamePanel extends JPanel implements Runnable {
                 } else if (gameState == GameState.DUO_WIN_P1 || gameState == GameState.DUO_WIN_P2) {
                     handleDuoWinClick(e.getX(), e.getY());
                 } else if (gameState == GameState.DUO_PLAY) {
-                    handleDuoClick(e.getX(), e.getY());
+                    if (e.getX() >= 280 && e.getX() <= 320 && e.getY() >= 0 && e.getY() <= 40) {
+                        gameState = GameState.DUO_PAUSED;
+                        SoundManager.play("click");
+                    }
+                } else if (gameState == GameState.DUO_PAUSED) {
+                    handleDuoPauseMenuClick(e.getX(), e.getY());
                 } else if (gameState == GameState.AIMING) {
                     if (e.getX() > screenWidth - 40 && e.getY() < 30) {
                         gameState = GameState.PAUSED;
@@ -245,6 +268,23 @@ public class GamePanel extends JPanel implements Runnable {
         shooter        = new Shooter(screenWidth / 2, screenHeight - 60, levelManager.getDifficulty().getMaxColors());
         animationManager = new AnimationManager(screenWidth, screenHeight);
         loadLevel();
+    }
+
+    private void loadMenuBackgrounds() {
+        for (int i = 0; i < MENU_BACKGROUND_FILES.length; i++) {
+            try {
+                menuBackgrounds[i] = ImageIO.read(new File(MENU_BACKGROUND_FILES[i]));
+            } catch (IOException e) {
+                System.err.println("Failed to load menu background: " + MENU_BACKGROUND_FILES[i]);
+                e.printStackTrace();
+                menuBackgrounds[i] = null;
+            }
+        }
+        menuBackgroundIndex = 0;
+        nextMenuBackgroundIndex = 0;
+        menuBackgroundFade = 1f;
+        menuBackgroundTransitioning = false;
+        menuBackgroundTicks = 0;
     }
 
     private void resetGame() {
@@ -455,16 +495,23 @@ public class GamePanel extends JPanel implements Runnable {
         }
     }
 
-    private void handleDuoClick(int x, int y) {
-        int bw = 120, bh = 40, by = screenHeight - 60;
-        int backX = 170, restartX = 310;
-        
-        if (y >= by && y <= by + bh) {
-            if (x >= backX && x <= backX + bw) {
-                gameState = GameState.MODE_SELECT;
+    private void handleDuoPauseMenuClick(int x, int y) {
+        int bw = 250, bh = 40, bx = (screenWidth - bw) / 2;
+        int resumeY = screenHeight / 2 - 40, restartY = screenHeight / 2 + 20, menuY = screenHeight / 2 + 80;
+        if (x >= bx && x <= bx + bw) {
+            if (y >= resumeY && y <= resumeY + bh) {
+                gameState = GameState.DUO_PLAY;
+                SoundManager.setBGMVolume(0.2);
                 SoundManager.play("click");
-            } else if (x >= restartX && x <= restartX + bw) {
+            }
+            else if (y >= restartY && y <= restartY + bh) {
                 startDuoMode();
+                SoundManager.play("click");
+            }
+            else if (y >= menuY && y <= menuY + bh) {
+                gameState = GameState.MODE_SELECT;
+                SoundManager.setBGMVolume(1.0);
+                SoundManager.startBGM();
                 SoundManager.play("click");
             }
         }
@@ -645,7 +692,7 @@ public class GamePanel extends JPanel implements Runnable {
             return;
         }
 
-        if (gameState == GameState.LOGIN || gameState == GameState.MENU || gameState == GameState.LEVEL_SELECT || gameState == GameState.PAUSED || gameState == GameState.MODE_SELECT) return;
+        if (gameState == GameState.LOGIN || gameState == GameState.MENU || gameState == GameState.LEVEL_SELECT || gameState == GameState.PAUSED || gameState == GameState.DUO_PAUSED || gameState == GameState.MODE_SELECT) return;
 
         if (gameState == GameState.GAME_OVER && countdownDeathBall != null) {
             deathFrame++;
@@ -1143,72 +1190,125 @@ public class GamePanel extends JPanel implements Runnable {
         g2.setRenderingHint(RenderingHints.KEY_ANTIALIASING, RenderingHints.VALUE_ANTIALIAS_ON);
         g2.setRenderingHint(RenderingHints.KEY_TEXT_ANTIALIASING, RenderingHints.VALUE_TEXT_ANTIALIAS_ON);
 
-        GradientPaint bgGrad;
-        if (gameState == GameState.LOGIN || gameState == GameState.MODE_SELECT || gameState == GameState.MENU || gameState == GameState.LEVEL_SELECT) {
-            // Light pastel lavender-blue background for menus/selection screens
-            bgGrad = new GradientPaint(0, 0, new Color(0xE8F0FE), 0, screenHeight, new Color(0xD2E3FC));
+        boolean showMenuBackground = gameState == GameState.MENU
+                || gameState == GameState.MODE_SELECT
+                || gameState == GameState.LEVEL_SELECT;
+
+        if (showMenuBackground && menuBackgrounds.length > 0) {
+            menuBackgroundTicks++;
+            if (!menuBackgroundTransitioning && menuBackgroundTicks >= 240) {
+                nextMenuBackgroundIndex = (menuBackgroundIndex + 1) % menuBackgrounds.length;
+                menuBackgroundFade = 0f;
+                menuBackgroundTransitioning = true;
+                menuBackgroundTicks = 0;
+            }
         } else {
-            // Light pastel pink background for active gameplay screens
-            bgGrad = new GradientPaint(0, 0, new Color(0xFFEEF0), 0, screenHeight, new Color(0xFFD1DC));
-        }
-        g2.setPaint(bgGrad);
-        g2.fillRect(0, 0, screenWidth, screenHeight);
-
-        // HUD BAR
-        g2.setColor(new Color(0x0d0d1a));
-        g2.fillRect(0, 0, screenWidth, (int) CEIL_Y);
-        g2.setFont(new Font("Arial", Font.BOLD, 14));
-        g2.setColor(Color.WHITE);
-        LevelData cur = levelManager.getCurrent();
-        int levelNum  = levelManager.getCurrentIndex() + 1;
-        int totalLevels = levelManager.getDifficulty().getTotalLevels();
-        String leftHUD  = (cur != null) ? "LEVEL " + levelNum + " / " + totalLevels : "LEVEL - / " + totalLevels;
-        String rightHUD = "BALLS: " + world.getBalls().size();
-        drawMuteButton(g2, 12, 8);
-        g2.setColor(Color.WHITE);
-        g2.drawString(leftHUD, 50, 20);
-        FontMetrics fm = g2.getFontMetrics();
-        g2.drawString(rightHUD, screenWidth - fm.stringWidth(rightHUD) - 50, 20);
-
-        // TIMER
-        if (levelTimeRemaining > 0 && gameState != GameState.STARTING_LEVEL && gameState != GameState.MENU) {
-            String timeStr = "TIME: " + levelTimeRemaining + "s";
-            g2.setFont(new Font("Arial", Font.BOLD, 18));
-            g2.setColor(Color.YELLOW);
-            int tw = g2.getFontMetrics().stringWidth(timeStr);
-            g2.drawString(timeStr, (screenWidth - tw) / 2, 21);
+            menuBackgroundTicks = 0;
         }
 
-        if (gameState != GameState.MENU) {
+        BufferedImage currentBackground = (showMenuBackground && menuBackgrounds.length > 0)
+                ? menuBackgrounds[menuBackgroundIndex] : null;
+        if (showMenuBackground && currentBackground != null) {
+            g2.drawImage(currentBackground, 0, 0, screenWidth, screenHeight, null);
+            if (menuBackgroundTransitioning) {
+                BufferedImage next = menuBackgrounds[nextMenuBackgroundIndex];
+                if (next != null) {
+                    Composite oldComposite = g2.getComposite();
+                    g2.setComposite(AlphaComposite.getInstance(AlphaComposite.SRC_OVER, menuBackgroundFade));
+                    g2.drawImage(next, 0, 0, screenWidth, screenHeight, null);
+                    g2.setComposite(oldComposite);
+                    menuBackgroundFade += 0.02f;
+                    if (menuBackgroundFade >= 1f) {
+                        menuBackgroundFade = 1f;
+                        menuBackgroundTransitioning = false;
+                        menuBackgroundIndex = nextMenuBackgroundIndex;
+                    }
+                }
+            }
+            g2.setColor(new Color(0, 0, 0, 80));
+            g2.fillRect(0, 0, screenWidth, screenHeight);
+
+            Paint oldPaint = g2.getPaint();
+            Composite oldComposite = g2.getComposite();
+            g2.setComposite(AlphaComposite.getInstance(AlphaComposite.SRC_OVER, 0.25f));
+            g2.setPaint(new RadialGradientPaint(new Point(screenWidth - 180, 160), 260,
+                    new float[]{0f, 0.6f, 1f},
+                    new Color[]{new Color(255, 255, 255, 180), new Color(255, 255, 255, 40), new Color(255, 255, 255, 0)}));
+            g2.fillRect(0, 0, screenWidth, screenHeight);
+            g2.setPaint(oldPaint);
+            g2.setComposite(oldComposite);
+        } else {
+            GradientPaint bgGrad;
+            if (gameState == GameState.LOGIN || gameState == GameState.MODE_SELECT || gameState == GameState.MENU || gameState == GameState.LEVEL_SELECT) {
+                // Light pastel lavender-blue background for menus/selection screens
+                bgGrad = new GradientPaint(0, 0, new Color(0xE8F0FE), 0, screenHeight, new Color(0xD2E3FC));
+            } else {
+                // Light pastel pink background for active gameplay screens
+                bgGrad = new GradientPaint(0, 0, new Color(0xFFEEF0), 0, screenHeight, new Color(0xFFD1DC));
+            }
+            g2.setPaint(bgGrad);
+            g2.fillRect(0, 0, screenWidth, screenHeight);
+        }
+
+        boolean showSinglePlayerGame = gameState == GameState.AIMING
+                || gameState == GameState.FIRING
+                || gameState == GameState.PAUSED
+                || gameState == GameState.LEVEL_CLEAR
+                || gameState == GameState.GAME_OVER
+                || gameState == GameState.YOU_WIN
+                || gameState == GameState.STARTING_LEVEL;
+
+        if (showSinglePlayerGame) {
+            // HUD BAR
+            g2.setColor(new Color(0x0d0d1a));
+            g2.fillRect(0, 0, screenWidth, (int) CEIL_Y);
+            g2.setFont(new Font("Comic Sans MS", Font.BOLD, 14));
+            g2.setColor(Color.WHITE);
+            LevelData cur = levelManager.getCurrent();
+            int levelNum  = levelManager.getCurrentIndex() + 1;
+            int totalLevels = levelManager.getDifficulty().getTotalLevels();
+            String leftHUD  = (cur != null) ? "LEVEL " + levelNum + " / " + totalLevels : "LEVEL - / " + totalLevels;
+            String rightHUD = "BALLS: " + world.getBalls().size();
+            drawMuteButton(g2, 12, 8);
+            g2.setColor(Color.WHITE);
+            g2.drawString(leftHUD, 50, 20);
+            FontMetrics fm = g2.getFontMetrics();
+            g2.drawString(rightHUD, screenWidth - fm.stringWidth(rightHUD) - 50, 20);
+
+            // TIMER
+            if (levelTimeRemaining > 0 && gameState != GameState.STARTING_LEVEL) {
+                String timeStr = "TIME: " + levelTimeRemaining + "s";
+                g2.setFont(new Font("Comic Sans MS", Font.BOLD, 18));
+                g2.setColor(Color.YELLOW);
+                int tw = g2.getFontMetrics().stringWidth(timeStr);
+                g2.drawString(timeStr, (screenWidth - tw) / 2, 21);
+            }
+
             g2.setColor(Color.WHITE);
             g2.fillRect(screenWidth - 30, 8, 6, 14);
             g2.fillRect(screenWidth - 18, 8, 6, 14);
-        }
-        g2.setStroke(new BasicStroke(2f));
-        g2.setColor(new Color(150, 150, 220));
-        int cy = (int) world.getCeilingY();
-        g2.drawLine(0, cy, screenWidth, cy);
-        
-        // Optional: fill space above ceiling line for a "moving wall" look
-        if (cy > (int) CEIL_Y) {
-            g2.setColor(new Color(30, 30, 50, 180));
-            g2.fillRect(0, (int) CEIL_Y, screenWidth, cy - (int) CEIL_Y);
-        }
-        
-        if (gameState != GameState.MENU) {
+            g2.setStroke(new BasicStroke(2f));
+            g2.setColor(new Color(150, 150, 220));
+            int cy = (int) world.getCeilingY();
+            g2.drawLine(0, cy, screenWidth, cy);
+
+            // Optional: fill space above ceiling line for a "moving wall" look
+            if (cy > (int) CEIL_Y) {
+                g2.setColor(new Color(30, 30, 50, 180));
+                g2.fillRect(0, (int) CEIL_Y, screenWidth, cy - (int) CEIL_Y);
+            }
+
             double df = levelManager.getDifficulty().getDangerYFactor();
             int dy = (int)(screenHeight * df);
             g2.setStroke(new BasicStroke(2f, BasicStroke.CAP_BUTT, BasicStroke.JOIN_MITER, 1f, new float[]{10f, 5f}, 0f));
             g2.setColor(new Color(255, 50, 50, 150));
             g2.drawLine(0, dy, screenWidth, dy);
             g2.setStroke(new BasicStroke(1f));
-            g2.setFont(new Font("Arial", Font.BOLD, 10));
+            g2.setFont(new Font("Comic Sans MS", Font.BOLD, 10));
             g2.setColor(new Color(255, 80, 80, 200));
             g2.drawString("DANGER", 5, dy - 3);
-        }
 
-        if (gameState == GameState.AIMING && isDragging && isAngleValid(mouseX, mouseY)) drawAimGuide(g2);
-        if (gameState != GameState.MENU) {
+            if (gameState == GameState.AIMING && isDragging && isAngleValid(mouseX, mouseY)) drawAimGuide(g2);
             if (!animationManager.isSlidingOut()) world.draw(g2);
             animationManager.draw(g2);
             shooter.draw(g2);
@@ -1218,14 +1318,14 @@ public class GamePanel extends JPanel implements Runnable {
         // Special ball legend
         if (gameState == GameState.AIMING || gameState == GameState.FIRING) {
             int lx = screenWidth - 120, ly = screenHeight - 130;
-            g2.setFont(new Font("Arial", Font.PLAIN, 10));
+            g2.setFont(new Font("Comic Sans MS", Font.PLAIN, 10));
             g2.setColor(Color.BLACK); g2.fillOval(lx, ly, 16, 16);
             g2.setColor(new Color(255, 80, 80)); g2.drawOval(lx, ly, 16, 16);
             g2.setColor(new Color(200, 200, 200)); g2.drawString("= Bomb (area)", lx + 20, ly + 12);
             g2.setColor(new Color(255, 100, 0)); g2.fillOval(lx, ly + 22, 16, 16);
-            g2.setColor(Color.WHITE); g2.setFont(new Font("Arial", Font.BOLD, 10));
+            g2.setColor(Color.WHITE); g2.setFont(new Font("Comic Sans MS", Font.BOLD, 10));
             g2.drawString("5", lx + 5, ly + 34);
-            g2.setFont(new Font("Arial", Font.PLAIN, 10)); g2.setColor(new Color(200, 200, 200));
+            g2.setFont(new Font("Comic Sans MS", Font.PLAIN, 10)); g2.setColor(new Color(200, 200, 200));
             g2.drawString("= Countdown", lx + 20, ly + 34);
             g2.setPaint(new java.awt.GradientPaint(lx, ly+44, Color.RED, lx+16, ly+60, Color.BLUE));
             g2.fillOval(lx, ly + 44, 16, 16);
@@ -1250,13 +1350,16 @@ public class GamePanel extends JPanel implements Runnable {
         if (gameState == GameState.LOGIN) drawLoginOverlay(g2);
         if (gameState == GameState.MODE_SELECT) drawModeSelectOverlay(g2);
         if (gameState == GameState.MENU) drawMenuOverlay(g2);
-        if (gameState == GameState.DUO_PLAY) drawDuoMode(g2);
+        if (gameState == GameState.DUO_PLAY || gameState == GameState.DUO_PAUSED) drawDuoMode(g2);
         if (gameState == GameState.DUO_WIN_P1) drawDuoWin(g2, 1);
         if (gameState == GameState.DUO_WIN_P2) drawDuoWin(g2, 2);
         if (gameState == GameState.LEVEL_SELECT) drawLevelSelectOverlay(g2);
+        int currentLevelNumber = levelManager.getCurrentIndex() + 1;
+
         if (gameState == GameState.STARTING_LEVEL) drawIntroOverlay(g2);
         if (gameState == GameState.PAUSED) drawPauseMenuOverlay(g2);
-        if (gameState == GameState.LEVEL_CLEAR) drawLevelClearOverlay(g2, levelNum);
+        if (gameState == GameState.DUO_PAUSED) drawDuoPauseMenuOverlay(g2);
+        if (gameState == GameState.LEVEL_CLEAR) drawLevelClearOverlay(g2, currentLevelNumber);
         if (gameState == GameState.GAME_OVER && (countdownDeathBall == null || deathFrame >= 90)) drawGameOverOverlay(g2);
         if (gameState == GameState.YOU_WIN) drawYouWinOverlay(g2);
         g2.dispose();
@@ -1293,9 +1396,9 @@ public class GamePanel extends JPanel implements Runnable {
     private void drawMenuOverlay(Graphics2D g2) {
         SoundManager.setBGMVolume(1.0);
         drawDimRect(g2, 160);
-        g2.setFont(new Font("Arial", Font.BOLD, 48)); g2.setColor(Color.WHITE);
+        g2.setFont(new Font("Comic Sans MS", Font.BOLD, 48)); g2.setColor(Color.WHITE);
         drawCentered(g2, "PUZZLE BOBBLE", 200);
-        g2.setFont(new Font("Arial", Font.BOLD, 24));
+        g2.setFont(new Font("Comic Sans MS", Font.BOLD, 24));
         drawButton(g2, "EASY (15 Levels)", screenHeight / 2 - 40, new Color(50, 200, 50));
         drawButton(g2, "MEDIUM (25 Levels)", screenHeight / 2 + 20, new Color(200, 200, 50));
         drawButton(g2, "HARD (35 Levels)", screenHeight / 2 + 80, new Color(200, 50, 50));
@@ -1305,7 +1408,7 @@ public class GamePanel extends JPanel implements Runnable {
     private void drawIntroOverlay(Graphics2D g2) {
         int alpha = (int) (220 * Math.min(1.0, introTimer / 30.0));
         drawDimRect(g2, alpha);
-        g2.setFont(new Font("Arial", Font.BOLD, 72));
+        g2.setFont(new Font("Comic Sans MS", Font.BOLD, 72));
         g2.setColor(new Color(255, 255, 255, alpha));
         drawCentered(g2, introDifficulty, screenHeight / 2 + 10);
         g2.setStroke(new BasicStroke(4f));
@@ -1316,7 +1419,7 @@ public class GamePanel extends JPanel implements Runnable {
     
     private void drawButton(Graphics2D g2, String text, int y, Color color) {
         Font originalFont = g2.getFont();
-        g2.setFont(new Font("Arial", Font.BOLD, 20)); // Ensure clean, legible size for all buttons
+        g2.setFont(new Font("Comic Sans MS", Font.BOLD, 20)); // Ensure clean, legible size for all buttons
         FontMetrics fm = g2.getFontMetrics();
         int textW = fm.stringWidth(text);
         int w = Math.max(260, textW + 40); // Dynamically scale button width if text is long
@@ -1324,20 +1427,38 @@ public class GamePanel extends JPanel implements Runnable {
         boolean hover = (mouseX >= x && mouseX <= x + w && mouseY >= y && mouseY <= y + h);
         double scale = hover ? (isDragging ? 0.92 : 1.08) : 1.0;
         java.awt.geom.AffineTransform old = g2.getTransform();
-        g2.translate(x + w/2.0, y + h/2.0); g2.scale(scale, scale);
-        g2.setColor(color); g2.fillRoundRect(-w/2, -h/2, w, h, 10, 10);
-        g2.setColor(Color.WHITE); g2.drawRoundRect(-w/2, -h/2, w, h, 10, 10);
+        g2.translate(x + w / 2.0, y + h / 2.0);
+        g2.scale(scale, scale);
+
+        Color baseColor = new Color(color.getRed(), color.getGreen(), color.getBlue(), hover ? 140 : 110);
+        g2.setColor(baseColor);
+        g2.fillRoundRect(-w / 2, -h / 2, w, h, 18, 18);
+
+        Paint oldPaint = g2.getPaint();
+        g2.setPaint(new GradientPaint(-w / 2, -h / 2, new Color(255, 255, 255, 120), -w / 2, 0,
+                new Color(255, 255, 255, 0)));
+        g2.fillRoundRect(-w / 2 + 4, -h / 2 + 4, w - 8, (h / 2) + 2, 16, 16);
+        g2.setPaint(oldPaint);
+
+        g2.setStroke(new BasicStroke(2f));
+        g2.setColor(new Color(255, 255, 255, 200));
+        g2.drawRoundRect(-w / 2, -h / 2, w, h, 18, 18);
+        g2.setColor(new Color(255, 255, 255, 120));
+        g2.drawRoundRect(-w / 2 + 2, -h / 2 + 2, w - 4, h - 4, 16, 16);
+
+        g2.setColor(new Color(255, 255, 255, hover ? 255 : 230));
         g2.drawString(text, -textW / 2, (fm.getAscent() - fm.getDescent()) / 2);
+
         g2.setTransform(old);
         g2.setFont(originalFont);
     }
 
     private void drawLevelClearOverlay(Graphics2D g2, int levelNum) {
         drawDimRect(g2, 160);
-        g2.setFont(new Font("Arial", Font.BOLD, 48)); g2.setColor(new Color(255, 220, 0));
+        g2.setFont(new Font("Comic Sans MS", Font.BOLD, 48)); g2.setColor(new Color(255, 220, 0));
         drawCentered(g2, "✓ Level " + levelNum + " Clear!", screenHeight / 2 - 60);
         
-        g2.setFont(new Font("Arial", Font.BOLD, 24));
+        g2.setFont(new Font("Comic Sans MS", Font.BOLD, 24));
         if (levelManager.hasNext()) {
             drawButton(g2, "Next Level", screenHeight / 2 + 20, new Color(50, 200, 50));
         }
@@ -1347,9 +1468,9 @@ public class GamePanel extends JPanel implements Runnable {
 
     private void drawPauseMenuOverlay(Graphics2D g2) {
         drawDimRect(g2, 160);
-        g2.setFont(new Font("Arial", Font.BOLD, 48)); g2.setColor(Color.WHITE);
+        g2.setFont(new Font("Comic Sans MS", Font.BOLD, 48)); g2.setColor(Color.WHITE);
         drawCentered(g2, "PAUSED", 200);
-        g2.setFont(new Font("Arial", Font.BOLD, 24));
+        g2.setFont(new Font("Comic Sans MS", Font.BOLD, 24));
         drawButton(g2, "Resume", screenHeight / 2 - 40, new Color(50, 200, 50));
         drawButton(g2, "Restart Level", screenHeight / 2 + 20, new Color(200, 200, 50));
         drawButton(g2, "Main Menu", screenHeight / 2 + 80, new Color(200, 50, 50));
@@ -1357,18 +1478,18 @@ public class GamePanel extends JPanel implements Runnable {
 
     private void drawGameOverOverlay(Graphics2D g2) {
         drawDimRect(g2, 160);
-        g2.setFont(new Font("Arial", Font.BOLD, 48)); g2.setColor(new Color(220, 50, 50));
+        g2.setFont(new Font("Comic Sans MS", Font.BOLD, 48)); g2.setColor(new Color(220, 50, 50));
         drawCentered(g2, "GAME OVER", 200);
-        g2.setFont(new Font("Arial", Font.BOLD, 24));
+        g2.setFont(new Font("Comic Sans MS", Font.BOLD, 24));
         drawButton(g2, "Restart Level", screenHeight / 2 + 20, new Color(200, 200, 50));
         drawButton(g2, "Main Menu", screenHeight / 2 + 80, new Color(200, 50, 50));
     }
 
     private void drawYouWinOverlay(Graphics2D g2) {
         drawDimRect(g2, 160);
-        g2.setFont(new Font("Arial", Font.BOLD, 64)); g2.setColor(new Color(255, 215, 0));
+        g2.setFont(new Font("Comic Sans MS", Font.BOLD, 64)); g2.setColor(new Color(255, 215, 0));
         drawCentered(g2, "YOU WIN!", screenHeight / 2 - 80);
-        g2.setFont(new Font("Arial", Font.BOLD, 24)); g2.setColor(Color.WHITE);
+        g2.setFont(new Font("Comic Sans MS", Font.BOLD, 24)); g2.setColor(Color.WHITE);
         drawCentered(g2, "All " + levelManager.getDifficulty().getTotalLevels() + " Levels Complete!", screenHeight / 2 - 20);
         
         drawButton(g2, "Play Again", screenHeight / 2 + 20, new Color(50, 200, 50));
@@ -1382,10 +1503,10 @@ public class GamePanel extends JPanel implements Runnable {
         g2.fillRect(0, 0, screenWidth, screenHeight);
         g2.setPaint(null);
 
-        g2.setFont(new Font("Arial", Font.BOLD, 48)); g2.setColor(new Color(0x2C3E50));
+        g2.setFont(new Font("Comic Sans MS", Font.BOLD, 48)); g2.setColor(new Color(0x2C3E50));
         drawCentered(g2, "LOGIN", 200);
         
-        g2.setFont(new Font("Arial", Font.PLAIN, 24)); g2.setColor(new Color(0x34495E));
+        g2.setFont(new Font("Comic Sans MS", Font.PLAIN, 24)); g2.setColor(new Color(0x34495E));
         drawCentered(g2, "Enter Username:", screenHeight / 2 - 40);
         
         int tw = 300, th = 50, tx = (screenWidth - tw) / 2, ty = screenHeight / 2 - 20;
@@ -1396,7 +1517,7 @@ public class GamePanel extends JPanel implements Runnable {
         g2.drawRoundRect(tx, ty, tw, th, 10, 10);
         
         g2.setColor(new Color(0x2C3E50));
-        g2.setFont(new Font("Arial", Font.BOLD, 28));
+        g2.setFont(new Font("Comic Sans MS", Font.BOLD, 28));
         String text = loginInput.toString() + (System.currentTimeMillis() % 1000 < 500 ? "|" : "");
         FontMetrics fm = g2.getFontMetrics();
         g2.drawString(text, tx + (tw - fm.stringWidth(text)) / 2, ty + 35);
@@ -1406,9 +1527,9 @@ public class GamePanel extends JPanel implements Runnable {
 
     private void drawLevelSelectOverlay(Graphics2D g2) {
         drawDimRect(g2, 230);
-        g2.setFont(new Font("Arial", Font.BOLD, 42)); g2.setColor(Color.WHITE);
+        g2.setFont(new Font("Comic Sans MS", Font.BOLD, 42)); g2.setColor(Color.WHITE);
         drawCentered(g2, "LEVEL SELECTION", 100);
-        g2.setFont(new Font("Arial", Font.BOLD, 20)); g2.setColor(Color.CYAN);
+        g2.setFont(new Font("Comic Sans MS", Font.BOLD, 20)); g2.setColor(Color.CYAN);
         drawCentered(g2, levelManager.getDifficulty().name(), 135);
         
         int rows = 5, cols = 5;
@@ -1425,17 +1546,18 @@ public class GamePanel extends JPanel implements Runnable {
             int by = startY + r * (boxSize + padding);
             
             boolean lock = i >= unlocked;
-            g2.setColor(lock ? new Color(60, 60, 60) : new Color(50, 150, 250));
-            g2.fillRoundRect(bx, by, boxSize, boxSize, 10, 10);
-            g2.setColor(Color.WHITE);
+            Color boxColor = lock ? new Color(80, 80, 80, 140) : new Color(50, 150, 250, 130);
+            g2.setColor(boxColor);
+            g2.fillRoundRect(bx, by, boxSize, boxSize, 16, 16);
+            g2.setColor(new Color(255, 255, 255, 160));
             g2.setStroke(new BasicStroke(2f));
-            g2.drawRoundRect(bx, by, boxSize, boxSize, 10, 10);
+            g2.drawRoundRect(bx, by, boxSize, boxSize, 16, 16);
             
             if (lock) {
-                g2.setFont(new Font("Arial", Font.BOLD, 30));
+                g2.setFont(new Font("Comic Sans MS", Font.BOLD, 30));
                 drawCenteredInBox(g2, "🔒", bx, by, boxSize);
             } else {
-                g2.setFont(new Font("Arial", Font.BOLD, 24));
+                g2.setFont(new Font("Comic Sans MS", Font.BOLD, 24));
                 drawCenteredInBox(g2, String.valueOf(i + 1), bx, by, boxSize);
             }
         }
@@ -1445,7 +1567,7 @@ public class GamePanel extends JPanel implements Runnable {
 
     private void drawModeSelectOverlay(Graphics2D g2) {
         drawDimRect(g2, 200);
-        g2.setFont(new Font("Arial", Font.BOLD, 36)); g2.setColor(Color.WHITE);
+        g2.setFont(new Font("Comic Sans MS", Font.BOLD, 36)); g2.setColor(Color.WHITE);
         drawCentered(g2, "CHOOSE MODE", 200);
         drawButton(g2, "SINGLE PLAYER", screenHeight / 2 - 40, new Color(50, 150, 250));
         drawButton(g2, "DUO VERSUS", screenHeight / 2 + 20, new Color(250, 100, 50));
@@ -1464,25 +1586,32 @@ public class GamePanel extends JPanel implements Runnable {
         g2.drawLine(300, 0, 300, screenHeight);
         g2.setStroke(new BasicStroke(1f));
 
-        // Bottom Buttons
-        int bw = 120, bh = 40, by = screenHeight - 60;
-        int backX = 170, restartX = 310;
-
-        // BACK Button
-        g2.setColor(new Color(150, 50, 50));
-        g2.fillRoundRect(backX, by, bw, bh, 10, 10);
+        // Draw Pause Button in Duo Mode
+        int px = 300;
+        int py = 15;
+        int radius = 16;
+        boolean hover = (mouseX >= px - radius && mouseX <= px + radius && mouseY >= py - radius && mouseY <= py + radius);
+        
+        g2.setColor(hover ? new Color(60, 60, 80, 240) : new Color(30, 30, 40, 200));
+        g2.fillOval(px - radius, py - radius, radius * 2, radius * 2);
+        
         g2.setColor(Color.WHITE);
-        g2.drawRoundRect(backX, by, bw, bh, 10, 10);
-        g2.setFont(new Font("Arial", Font.BOLD, 14));
-        FontMetrics fm = g2.getFontMetrics();
-        g2.drawString("BACK", backX + (bw - fm.stringWidth("BACK")) / 2, by + 25);
+        g2.setStroke(new BasicStroke(2f));
+        g2.drawOval(px - radius, py - radius, radius * 2, radius * 2);
+        
+        g2.fillRect(px - 5, py - 7, 3, 14);
+        g2.fillRect(px + 2, py - 7, 3, 14);
+        g2.setStroke(new BasicStroke(1f));
+    }
 
-        // RESTART Button
-        g2.setColor(new Color(200, 100, 50));
-        g2.fillRoundRect(restartX, by, bw, bh, 10, 10);
-        g2.setColor(Color.WHITE);
-        g2.drawRoundRect(restartX, by, bw, bh, 10, 10);
-        g2.drawString("RESTART", restartX + (bw - fm.stringWidth("RESTART")) / 2, by + 25);
+    private void drawDuoPauseMenuOverlay(Graphics2D g2) {
+        drawDimRect(g2, 160);
+        g2.setFont(new Font("Comic Sans MS", Font.BOLD, 48)); g2.setColor(Color.WHITE);
+        drawCentered(g2, "DUO PAUSED", 200);
+        g2.setFont(new Font("Comic Sans MS", Font.BOLD, 24));
+        drawButton(g2, "Resume", screenHeight / 2 - 40, new Color(50, 200, 50));
+        drawButton(g2, "Restart Duo", screenHeight / 2 + 20, new Color(200, 200, 50));
+        drawButton(g2, "Main Menu", screenHeight / 2 + 80, new Color(200, 50, 50));
     }
 
     private void drawDuoPlayer(Graphics2D g2, int offsetX, BallWorld w, Shooter s, AnimationManager am, Ball mb, int wins, LevelManager lm) {
@@ -1504,7 +1633,7 @@ public class GamePanel extends JPanel implements Runnable {
         
         // UI
         g2.setColor(Color.WHITE);
-        g2.setFont(new Font("Arial", Font.BOLD, 16));
+        g2.setFont(new Font("Comic Sans MS", Font.BOLD, 16));
         g2.drawString("Level: " + (lm.getCurrentIndex() + 1), 20, screenHeight - 65);
         g2.drawString("Wins: " + wins + " / 15", 20, screenHeight - 40);
         
@@ -1567,7 +1696,7 @@ public class GamePanel extends JPanel implements Runnable {
 
     private void drawDuoWin(Graphics2D g2, int p) {
         drawDimRect(g2, 200);
-        g2.setFont(new Font("Arial", Font.BOLD, 64));
+        g2.setFont(new Font("Comic Sans MS", Font.BOLD, 64));
         g2.setColor(p == 1 ? Color.CYAN : Color.ORANGE);
         drawCentered(g2, "PLAYER " + p + " WINS!", screenHeight / 2 - 30);
         drawButton(g2, "REPLAY", screenHeight / 2 + 50, new Color(50, 200, 50));

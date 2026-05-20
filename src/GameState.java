@@ -11,6 +11,7 @@ public enum GameState {
     YOU_WIN,
     STARTING_LEVEL,
     DUO_PLAY,
+    DUO_PAUSED,
     DUO_WIN_P1,
     DUO_WIN_P2
 }

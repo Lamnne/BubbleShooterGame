@@ -82,7 +82,7 @@ public class Shooter {
         }
         
         g2.setColor(Color.WHITE);
-        g2.setFont(new Font("Arial", Font.BOLD, 12));
+        g2.setFont(new Font("Comic Sans MS", Font.BOLD, 12));
         g2.drawString("NEXT", x + 35, y - 20);
         
         if (nextBall != null) {

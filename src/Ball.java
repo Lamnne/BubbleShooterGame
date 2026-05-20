@@ -163,7 +163,7 @@ public class Ball {
                 // Large countdown number
                 String text = String.valueOf(countdown);
                 int fontSize = countdown <= 9 ? 24 : 20;
-                g2.setFont(new java.awt.Font("Arial", java.awt.Font.BOLD, fontSize));
+                g2.setFont(new java.awt.Font("Comic Sans MS", java.awt.Font.BOLD, fontSize));
                 java.awt.FontMetrics fm = g2.getFontMetrics();
                 int tx = -fm.stringWidth(text) / 2;
                 int ty = fm.getAscent() / 2 - 1;
@@ -211,7 +211,7 @@ public class Ball {
         
         // Star/sparkle symbol in center
         g2.setColor(new Color(255, 255, 255, 220));
-        g2.setFont(new java.awt.Font("Arial", java.awt.Font.BOLD, 16));
+        g2.setFont(new java.awt.Font("Comic Sans MS", java.awt.Font.BOLD, 16));
         java.awt.FontMetrics fm = g2.getFontMetrics();
         String star = "★";
         g2.drawString(star, -fm.stringWidth(star)/2, fm.getAscent()/2 - 2);
